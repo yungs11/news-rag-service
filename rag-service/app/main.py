@@ -144,6 +144,7 @@ async def get_document(document_id: str):
         title=str(doc.get("title", "")),
         category=str(doc.get("category", "")),
         summary_text=str(doc.get("summary_text", "")),
+        raw_text=doc.get("raw_text") or None,
         summary_date=str(doc["summary_date"]) if doc.get("summary_date") else None,
         created_at=str(doc.get("created_at", "")),
     )
