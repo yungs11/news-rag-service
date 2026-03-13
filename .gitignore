@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.env
+.venv/
+venv/
+data/
+
+# Next.js
+web-app/.next/
+web-app/node_modules/
+web-app/.env.local
+
+# IDE
+.vscode/
+.idea/
+.claude/
