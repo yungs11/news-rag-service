@@ -102,5 +102,3 @@ class SummarizeResponse(BaseModel):
     source_type: str | None = None
     document_id: str | None = None
     created: bool | None = None
-    raw_chars: int | None = None
-    embed_truncated: bool | None = None

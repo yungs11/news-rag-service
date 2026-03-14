@@ -48,11 +48,9 @@ class RagService:
         summary_date: str | None,
         user_id: str | None = None,
     ) -> tuple[str, bool]:
-        # 청킹: summary 우선, raw 보조 (raw는 임베딩 시간 절약을 위해 상한 적용)
-        _max_raw = 20_000
-        embed_raw = raw_text[:_max_raw]
+        # 청킹: summary 우선, raw 보조
         summary_chunks = _chunks(summary_text, chunk_size=700, overlap=80)
-        raw_chunks = _chunks(embed_raw, chunk_size=900, overlap=150)
+        raw_chunks = _chunks(raw_text, chunk_size=900, overlap=150)
 
         all_texts = [(t, "summary") for t in summary_chunks] + [(t, "raw") for t in raw_chunks]
         texts_only = [t for t, _ in all_texts]
