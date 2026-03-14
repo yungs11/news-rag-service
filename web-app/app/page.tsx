@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
 import IngestModal from "./components/IngestModal";
+import SummaryRenderer from "./components/SummaryRenderer";
 
 const CATEGORY_COLORS: Record<string, string> = {
   "AI/LLM":    "bg-violet-100 text-violet-700",
@@ -115,7 +116,7 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
         {/* Body */}
         <div className="overflow-y-auto p-5 flex-1">
           {tab === "summary" ? (
-            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{doc.summary_text}</p>
+            <SummaryRenderer text={doc.summary_text} />
           ) : loadingRaw ? (
             <p className="text-sm text-gray-400 text-center py-10">불러오는 중...</p>
           ) : rawText ? (

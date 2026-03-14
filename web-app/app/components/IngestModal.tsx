@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
+import SummaryRenderer from "./SummaryRenderer";
 
 type Tab = "url" | "file";
 type Phase = "idle" | "loading" | "done" | "error";
@@ -153,16 +154,23 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
 
           {/* Result */}
           {phase === "done" && result && (
-            <div className="bg-green-50 border border-green-200 rounded-xl p-4 space-y-2">
-              <p className="text-xs font-semibold text-green-700">요약 완료</p>
-              {result.title && <p className="text-sm font-bold text-gray-900">{result.title}</p>}
-              {result.category && (
-                <span className="inline-block text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-md font-semibold">{result.category}</span>
+            <div className="border border-green-200 rounded-xl overflow-hidden">
+              <div className="bg-green-50 px-4 py-2.5 flex items-center gap-2 border-b border-green-200">
+                <p className="text-xs font-semibold text-green-700">요약 완료</p>
+                {result.category && (
+                  <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">{result.category}</span>
+                )}
+              </div>
+              {result.title && (
+                <div className="px-4 pt-3 pb-1">
+                  <p className="text-sm font-bold text-gray-900">{result.title}</p>
+                </div>
               )}
               {result.summary && (
-                <p className="text-xs text-gray-600 leading-relaxed line-clamp-4">{result.summary}</p>
+                <div className="px-4 pb-4 pt-2 max-h-80 overflow-y-auto">
+                  <SummaryRenderer text={result.summary} />
+                </div>
               )}
-
             </div>
           )}
 

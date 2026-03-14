@@ -1,4 +1,5 @@
 import { api } from "@/lib/api";
+import SummaryRenderer from "@/app/components/SummaryRenderer";
 import type { Metadata } from "next";
 
 interface Props {
@@ -51,9 +52,8 @@ export default async function SharePage({ params }: Props) {
         {doc.source_url}
       </a>
 
-      <div className="mt-6 bg-white border border-gray-200 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-gray-500 mb-3">요약</h2>
-        <p className="text-sm leading-relaxed whitespace-pre-wrap">{doc.summary_text}</p>
+      <div className="mt-6">
+        <SummaryRenderer text={doc.summary_text} />
       </div>
     </div>
   );
