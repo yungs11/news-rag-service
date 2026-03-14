@@ -298,8 +298,11 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
     """추출된 콘텐츠를 요약·분류·저장하는 공통 파이프라인."""
     from datetime import date as _date
 
+    t_start = time.perf_counter()
+    logger.info("Pipeline start: source=%s source_type=%s chars=%d", content.url, content.source_type, len(content.content))
+
     if not is_valid_content(content.content):
-        logger.warning("Content invalid/junk: source=%s chars=%d", content.url, len(content.content))
+        logger.warning("Pipeline abort: invalid/junk content source=%s chars=%d", content.url, len(content.content))
         return SummarizeResponse(
             status="failed",
             message=(
@@ -311,6 +314,7 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         )
 
     # 카테고리를 먼저 분류해서 요약 프롬프트에 전달 (AI/LLM 여부에 따라 섹션 조건 분기)
+    t1 = time.perf_counter()
     category = await classify_category(
         content.title,
         content.content[:800],
@@ -318,7 +322,9 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         base_url=settings.openrouter_base_url,
         model=settings.openrouter_summary_model,
     )
+    logger.info("Pipeline step classify: category=%s elapsed=%.2fs", category, time.perf_counter() - t1)
 
+    t2 = time.perf_counter()
     summary = await summarize_content(
         content,
         category=category,
@@ -328,9 +334,10 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         system_prompt=settings.summary_system_prompt,
         user_prompt_template=settings.summary_user_prompt_template,
     )
+    logger.info("Pipeline step summarize: chars=%d elapsed=%.2fs", len(summary), time.perf_counter() - t2)
 
     if is_failed_summary(summary):
-        logger.warning("Summary returned 요약불가: source=%s", content.url)
+        logger.warning("Pipeline abort: failed summary source=%s", content.url)
         return SummarizeResponse(
             status="failed",
             message=(
@@ -341,6 +348,7 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
             source_type=content.source_type,
         )
 
+    t3 = time.perf_counter()
     document_id, created = await rag.ingest(
         source_url=content.url,
         source_type=content.source_type,
@@ -351,7 +359,9 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         summary_date=_date.today().isoformat(),
         user_id=user_id,
     )
+    logger.info("Pipeline step ingest: document_id=%s created=%s elapsed=%.2fs", document_id, created, time.perf_counter() - t3)
 
+    logger.info("Pipeline done: source=%s total=%.2fs", content.url, time.perf_counter() - t_start)
     return SummarizeResponse(
         status="ok",
         message=f"[요약 완료] {content.url}",
