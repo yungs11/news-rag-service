@@ -11,6 +11,7 @@ interface Result {
   category?: string;
   summary?: string;
   message: string;
+  embedTruncated?: boolean;
 }
 
 export default function IngestModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
@@ -37,7 +38,7 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
         res = await api.summarizeUpload(file);
       }
       if (res.status === "ok") {
-        setResult({ title: res.title, category: res.category, summary: res.summary, message: res.message });
+        setResult({ title: res.title, category: res.category, summary: res.summary, message: res.message, embedTruncated: res.embed_truncated });
         setPhase("done");
         onSuccess();
       } else {
@@ -161,6 +162,9 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
               )}
               {result.summary && (
                 <p className="text-xs text-gray-600 leading-relaxed line-clamp-4">{result.summary}</p>
+              )}
+              {result.embedTruncated && (
+                <p className="text-xs text-red-600 font-medium">* 원문이 2만자를 초과하여 앞 2만자까지만 임베딩됩니다. (검색 시 해당 범위 내 내용만 사용됩니다)</p>
               )}
             </div>
           )}

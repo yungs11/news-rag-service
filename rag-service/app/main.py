@@ -352,6 +352,9 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         user_id=user_id,
     )
 
+    raw_chars = len(content.content)
+    embed_truncated = raw_chars > 20_000
+
     return SummarizeResponse(
         status="ok",
         message=f"[요약 완료] {content.url}",
@@ -361,6 +364,8 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         source_type=content.source_type,
         document_id=document_id,
         created=created,
+        raw_chars=raw_chars,
+        embed_truncated=embed_truncated,
     )
 
 

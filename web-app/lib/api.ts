@@ -93,7 +93,7 @@ export const api = {
 
   summarize: (url: string) => {
     const uid = _userIdParam();
-    return post<{ status: string; message: string; title?: string; category?: string; summary?: string }>("/summarize", {
+    return post<{ status: string; message: string; title?: string; category?: string; summary?: string; raw_chars?: number; embed_truncated?: boolean }>("/summarize", {
       url,
       user_id: uid,
     });
@@ -106,7 +106,7 @@ export const api = {
     if (uid) form.append("user_id", uid);
     const res = await fetch(`${BASE}/summarize/upload`, { method: "POST", body: form });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json() as Promise<{ status: string; message: string; title?: string; category?: string; summary?: string }>;
+    return res.json() as Promise<{ status: string; message: string; title?: string; category?: string; summary?: string; raw_chars?: number; embed_truncated?: boolean }>;
   },
 
   graphData: () =>
