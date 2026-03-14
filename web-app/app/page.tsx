@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
+import IngestModal from "./components/IngestModal";
 
 const CATEGORY_COLORS: Record<string, string> = {
   "AI/LLM":    "bg-violet-100 text-violet-700",
@@ -17,7 +18,9 @@ const SOURCE_ICONS: Record<string, string> = {
   youtube: "▶",
   news:    "📰",
   blog:    "✍️",
-  other:   "🔗",
+  pdf:     "📕",
+  docx:    "📘",
+  other:   "🌐",
 };
 
 function CategoryBadge({ category }: { category: string }) {
@@ -116,25 +119,28 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
           ) : loadingRaw ? (
             <p className="text-sm text-gray-400 text-center py-10">불러오는 중...</p>
           ) : rawText ? (
-            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{rawText}</p>
+            <div className="space-y-2">
+              {rawText
+                .replace(/\s+/g, " ")
+                .split(/(?<=[.?!。])\s+|(?=\s*-\s)/)
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .map((sentence, i) => (
+                  <p key={i} className="text-sm text-gray-700 leading-relaxed">
+                    {sentence}
+                  </p>
+                ))}
+            </div>
           ) : (
             <p className="text-sm text-gray-400 text-center py-10">원문 내용이 없습니다.</p>
           )}
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-gray-100 flex items-center justify-between gap-3">
-          <a
-            href={doc.source_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-600 hover:underline truncate"
-          >
-            원문 보기 →
-          </a>
+        <div className="p-4 border-t border-gray-100 flex justify-end">
           <button
             onClick={onClose}
-            className="shrink-0 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg transition-colors"
+            className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg transition-colors"
           >
             닫기
           </button>
@@ -146,30 +152,15 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
 
 /* ── Share Modal ── */
 function ShareModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
+  const fullShareText = `[${doc.category}] ${doc.title}\n\n${doc.summary_text}${doc.source_url && !doc.source_url.startsWith("upload://") ? `\n\n원문: ${doc.source_url}` : ""}`;
+  const [textCopied, setTextCopied] = useState(false);
 
-  const shareUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/share/${doc.id}`;
-  const shareText = `[${doc.category}] ${doc.title}\n\n${doc.summary_text.slice(0, 200)}...\n\n원문: ${doc.source_url}`;
-
-  const handleCopy = async () => {
+  const handleCopyText = async () => {
     try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* fallback */
-    }
-  };
-
-  const handleKakao = () => {
-    const kakaoText = encodeURIComponent(`[${doc.category}] ${doc.title}\n\n${doc.summary_text.slice(0, 150)}...\n\n▶ 원문: ${doc.source_url}\n▶ 요약: ${shareUrl}`);
-    window.open(`https://story.kakao.com/share?url=${encodeURIComponent(shareUrl)}&text=${kakaoText}`, "_blank", "width=600,height=500");
-  };
-
-  const handleNativeShare = async () => {
-    if (navigator.share) {
-      await navigator.share({ title: doc.title, text: shareText, url: shareUrl });
-    }
+      await navigator.clipboard.writeText(fullShareText);
+      setTextCopied(true);
+      setTimeout(() => setTextCopied(false), 2000);
+    } catch { /* ignore */ }
   };
 
   return (
@@ -193,48 +184,16 @@ function ShareModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => void
         </div>
 
         {/* Share buttons */}
-        <div className="p-5 space-y-3">
-          {/* URL copy */}
-          <div className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2.5">
-            <span className="text-xs text-gray-500 flex-1 truncate">{shareUrl}</span>
-            <button
-              onClick={handleCopy}
-              className={`shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
-                copied ? "bg-green-500 text-white" : "bg-blue-600 text-white hover:bg-blue-700"
-              }`}
-            >
-              {copied ? "복사됨 ✓" : "URL 복사"}
-            </button>
-          </div>
-
-          {/* KakaoTalk */}
+        <div className="p-5">
           <button
-            onClick={handleKakao}
-            className="w-full flex items-center justify-center gap-2 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 font-semibold text-sm py-3 rounded-xl transition-colors"
+            onClick={handleCopyText}
+            className={`w-full flex items-center justify-center gap-2 font-semibold text-sm py-3.5 rounded-xl transition-colors ${
+              textCopied
+                ? "bg-green-500 text-white"
+                : "bg-blue-600 hover:bg-blue-700 text-white"
+            }`}
           >
-            <span className="text-base">💬</span>
-            카카오톡으로 공유
-          </button>
-
-          {/* Native share (mobile) */}
-          {typeof navigator !== "undefined" && navigator.share && (
-            <button
-              onClick={handleNativeShare}
-              className="w-full flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold text-sm py-3 rounded-xl transition-colors"
-            >
-              <span className="text-base">↗</span>
-              다른 앱으로 공유
-            </button>
-          )}
-
-          {/* Summary text copy */}
-          <button
-            onClick={async () => {
-              await navigator.clipboard.writeText(shareText);
-            }}
-            className="w-full flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-xs py-2.5 rounded-xl transition-colors"
-          >
-            📋 요약 + 원문링크 텍스트 복사
+            {textCopied ? "✓ 복사 완료" : "📋 요약 + 원문링크 텍스트 복사"}
           </button>
         </div>
       </div>
@@ -249,11 +208,13 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<DocumentDetail[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [apiError, setApiError] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocumentDetail | null>(null);
   const [shareDoc, setShareDoc] = useState<DocumentDetail | null>(null);
+  const [showIngest, setShowIngest] = useState(false);
 
-  useEffect(() => {
+  const loadDocs = useCallback(() => {
     Promise.all([
       api.recentDocuments(50).catch(() => null),
       api.categories().catch(() => null),
@@ -263,6 +224,8 @@ export default function HomePage() {
       if (catRes) setCategories(catRes.items);
     });
   }, []);
+
+  useEffect(() => { loadDocs(); }, [loadDocs]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -361,7 +324,7 @@ export default function HomePage() {
         </form>
 
         {/* Category filter */}
-        <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-gray-100">
+        <div className="flex gap-2 mt-4 pt-4 border-t border-gray-100 overflow-x-auto pb-1 scrollbar-none">
           <button
             onClick={() => setSelectedCategory(undefined)}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
@@ -376,7 +339,7 @@ export default function HomePage() {
             <button
               key={c.category}
               onClick={() => setSelectedCategory(c.category as Category)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 selectedCategory === c.category
                   ? "bg-blue-600 text-white"
                   : "bg-gray-100 text-gray-600 hover:bg-gray-200"
@@ -422,45 +385,75 @@ export default function HomePage() {
                 </div>
               </div>
 
-              <button
-                onClick={() => setSelectedDoc(doc)}
-                className="text-left w-full"
-              >
+              <button onClick={() => setSelectedDoc(doc)} className="text-left w-full">
                 <h3 className="font-semibold text-sm text-gray-900 leading-snug mb-2 line-clamp-2 group-hover:text-blue-700 transition-colors cursor-pointer">
                   {doc.title || "Untitled"}
                 </h3>
               </button>
 
-              <p className="text-xs text-gray-500 leading-relaxed line-clamp-3 mb-4">
-                {doc.summary_text?.slice(0, 250)}
-              </p>
+              <button onClick={() => setSelectedDoc(doc)} className="text-left w-full mb-4">
+                <p className="text-xs text-gray-500 leading-relaxed line-clamp-3 cursor-pointer">
+                  {doc.summary_text?.slice(0, 250)}
+                </p>
+              </button>
 
               <div className="flex items-center justify-between pt-3 border-t border-gray-50">
                 <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setSelectedDoc(doc)}
-                    className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
-                  >
-                    요약 보기 →
-                  </button>
-                  <a
-                    href={doc.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-gray-400 hover:text-gray-600 hover:underline transition-colors"
-                  >
-                    원문
-                  </a>
+                  {doc.source_url && !doc.source_url.startsWith("upload://") && (
+                    <a
+                      href={doc.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-gray-400 hover:text-gray-600 hover:underline transition-colors"
+                    >
+                      원문보기
+                    </a>
+                  )}
                 </div>
-                {doc.id && (
-                  <button
-                    onClick={() => setShareDoc(doc)}
-                    className="text-xs text-gray-300 hover:text-gray-500 transition-colors"
-                    title="공유하기"
-                  >
-                    🔗
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {doc.id && (
+                    <button
+                      onClick={() => setShareDoc(doc)}
+                      className="text-gray-300 hover:text-gray-500 transition-colors"
+                      title="공유하기"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+                        <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                      </svg>
+                    </button>
+                  )}
+                  {doc.id && (
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`"${doc.title || "이 문서"}"를 삭제하시겠습니까?`)) return;
+                        setDeletingId(doc.id);
+                        try {
+                          await api.deleteDocument(doc.id);
+                          loadDocs();
+                        } catch {
+                          alert("삭제에 실패했습니다.");
+                        } finally {
+                          setDeletingId(null);
+                        }
+                      }}
+                      disabled={deletingId === doc.id}
+                      className="text-gray-300 hover:text-red-400 transition-colors disabled:opacity-40"
+                      title="삭제"
+                    >
+                      {deletingId === doc.id ? (
+                        <span className="text-xs">·</span>
+                      ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                          <path d="M10 11v6M14 11v6"/>
+                          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                        </svg>
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))}
@@ -476,6 +469,23 @@ export default function HomePage() {
       {shareDoc && (
         <ShareModal doc={shareDoc} onClose={() => setShareDoc(null)} />
       )}
+
+      {/* Ingest Modal */}
+      {showIngest && (
+        <IngestModal
+          onClose={() => setShowIngest(false)}
+          onSuccess={() => { setShowIngest(false); loadDocs(); }}
+        />
+      )}
+
+      {/* FAB */}
+      <button
+        onClick={() => setShowIngest(true)}
+        className="fixed bottom-6 right-6 z-40 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 active:bg-blue-800 transition-colors flex items-center justify-center text-2xl leading-none"
+        aria-label="문서 추가"
+      >
+        +
+      </button>
     </div>
   );
 }

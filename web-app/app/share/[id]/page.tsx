@@ -2,12 +2,13 @@ import { api } from "@/lib/api";
 import type { Metadata } from "next";
 
 interface Props {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { id } = await params;
   try {
-    const doc = await api.getDocument(params.id);
+    const doc = await api.getDocument(id);
     return { title: doc.title, description: doc.summary_text.slice(0, 160) };
   } catch {
     return { title: "Document not found" };
@@ -15,9 +16,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function SharePage({ params }: Props) {
+  const { id } = await params;
   let doc;
   try {
-    doc = await api.getDocument(params.id);
+    doc = await api.getDocument(id);
   } catch {
     return (
       <div className="text-center py-20 text-gray-400">

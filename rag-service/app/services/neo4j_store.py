@@ -24,6 +24,16 @@ def _chunks(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
     return out
 
 
+def _build_doc_filter(category: str | None, user_id: str | None) -> str:
+    """Build WHERE clause for Document node filtering."""
+    clauses = []
+    if category:
+        clauses.append("d.category = $category")
+    if user_id:
+        clauses.append("d.user_id = $user_id")
+    return ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+
 class Neo4jStore:
     def __init__(self, uri: str, user: str, password: str, embedding_dim: int = 4096) -> None:
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(uri, auth=(user, password))
@@ -65,9 +75,10 @@ class Neo4jStore:
                 FOR (n:Chunk|Document) ON EACH [n.text, n.title]
                 """
             )
-            # Date / category index for filtering
+            # Date / category / user_id index for filtering
             await s.run("CREATE INDEX doc_summary_date IF NOT EXISTS FOR (d:Document) ON (d.summary_date)")
             await s.run("CREATE INDEX doc_category IF NOT EXISTS FOR (d:Document) ON (d.category)")
+            await s.run("CREATE INDEX doc_user_id IF NOT EXISTS FOR (d:Document) ON (d.user_id)")
         logger.info("Neo4j indexes ensured")
 
     # ─── Ingest ────────────────────────────────────────────────────────────────
@@ -83,6 +94,7 @@ class Neo4jStore:
         raw_text: str,
         summary_date: str | None,
         chunk_embeddings: list[tuple[str, str, list[float]]],  # (text, chunk_type, embedding)
+        user_id: str | None = None,
     ) -> tuple[str, bool]:
         """Returns (document_id, created). created=False means duplicate."""
         content_hash = hashlib.sha256(raw_text.encode("utf-8", errors="ignore")).hexdigest()
@@ -111,6 +123,7 @@ class Neo4jStore:
                     raw_text: $raw_text,
                     content_hash: $content_hash,
                     summary_date: $summary_date,
+                    user_id: $user_id,
                     created_at: datetime()
                 })
                 """,
@@ -123,6 +136,7 @@ class Neo4jStore:
                 raw_text=raw_text,
                 content_hash=content_hash,
                 summary_date=summary_date,
+                user_id=user_id,
             )
 
             for idx, (text, chunk_type, embedding) in enumerate(chunk_embeddings):
@@ -138,7 +152,8 @@ class Neo4jStore:
                         chunk_index: $idx,
                         title: $title,
                         category: $category,
-                        source_url: $source_url
+                        source_url: $source_url,
+                        user_id: $user_id
                     })
                     CREATE (d)-[:HAS_CHUNK]->(c)
                     """,
@@ -151,6 +166,7 @@ class Neo4jStore:
                     title=title,
                     category=category,
                     source_url=source_url,
+                    user_id=user_id,
                 )
 
             return doc_id, True
@@ -163,8 +179,9 @@ class Neo4jStore:
         limit: int,
         category: str | None = None,
         score_threshold: float = 0.5,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        cat_filter = "WHERE d.category = $category" if category else ""
+        doc_filter = _build_doc_filter(category, user_id)
         async with self._driver.session() as s:
             result = await s.run(
                 f"""
@@ -172,7 +189,7 @@ class Neo4jStore:
                 YIELD node AS c, score
                 WHERE score >= $score_threshold
                 MATCH (d:Document)-[:HAS_CHUNK]->(c)
-                {cat_filter}
+                {doc_filter}
                 RETURN d.id AS document_id,
                        d.source_url AS source_url,
                        d.title AS title,
@@ -187,6 +204,7 @@ class Neo4jStore:
                 k=limit * 2,
                 embedding=embedding,
                 category=category,
+                user_id=user_id,
                 limit=limit,
                 score_threshold=score_threshold,
             )
@@ -197,11 +215,12 @@ class Neo4jStore:
         query: str,
         limit: int,
         category: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         # Lucene: escape special chars, use OR for multi-token
         tokens = re.findall(r"[0-9A-Za-z가-힣]{2,}", query)
         fts_query = " OR ".join(f"{t}*" for t in tokens) if tokens else query
-        cat_filter = "WHERE d.category = $category" if category else ""
+        doc_filter = _build_doc_filter(category, user_id)
         async with self._driver.session() as s:
             try:
                 result = await s.run(
@@ -209,7 +228,7 @@ class Neo4jStore:
                     CALL db.index.fulltext.queryNodes('document_fulltext', $fts_query)
                     YIELD node AS c, score
                     MATCH (d:Document)-[:HAS_CHUNK]->(c)
-                    {cat_filter}
+                    {doc_filter}
                     RETURN d.id AS document_id,
                            d.source_url AS source_url,
                            d.title AS title,
@@ -223,6 +242,7 @@ class Neo4jStore:
                     """,
                     fts_query=fts_query,
                     category=category,
+                    user_id=user_id,
                     limit=limit,
                 )
                 return await result.data()
@@ -236,10 +256,11 @@ class Neo4jStore:
         query_embedding: list[float],
         limit: int,
         category: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Vector + fulltext search merged with Reciprocal Rank Fusion."""
-        vector_results = await self.vector_search(query_embedding, limit, category)
-        fts_results = await self.fulltext_search(query, limit, category)
+        vector_results = await self.vector_search(query_embedding, limit, category, user_id=user_id)
+        fts_results = await self.fulltext_search(query, limit, category, user_id=user_id)
 
         # RRF merge (k=60)
         rrf_k = 60
@@ -283,11 +304,13 @@ class Neo4jStore:
             record = await result.single()
             return dict(record) if record else None
 
-    async def recent_documents(self, limit: int = 10) -> list[dict[str, Any]]:
+    async def recent_documents(self, limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
+        doc_filter = _build_doc_filter(None, user_id)
         async with self._driver.session() as s:
             result = await s.run(
-                """
+                f"""
                 MATCH (d:Document)
+                {doc_filter}
                 RETURN d.id AS id, d.source_url AS source_url,
                        d.source_type AS source_type, d.title AS title,
                        d.category AS category, d.summary_text AS summary_text,
@@ -297,16 +320,77 @@ class Neo4jStore:
                 LIMIT $limit
                 """,
                 limit=limit,
+                user_id=user_id,
             )
             return await result.data()
 
-    async def list_categories(self) -> list[dict[str, Any]]:
+    async def similar_document_pairs(
+        self,
+        score_threshold: float = 0.75,
+        limit: int = 300,
+    ) -> list[dict[str, Any]]:
+        """청크 벡터 인덱스를 이용해 문서 간 유사도 쌍을 반환."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (d1:Document)-[:HAS_CHUNK]->(c1:Chunk)
+                CALL db.index.vector.queryNodes('chunk_embedding_index', 6, c1.embedding)
+                YIELD node AS c2, score
+                WHERE score >= $threshold AND NOT (d1)-[:HAS_CHUNK]->(c2)
+                MATCH (d2:Document)-[:HAS_CHUNK]->(c2)
+                WHERE d1.id <> d2.id
+                WITH d1.id AS source_id, d2.id AS target_id, max(score) AS max_score
+                WHERE source_id < target_id
+                RETURN source_id, target_id, max_score
+                ORDER BY max_score DESC
+                LIMIT $limit
+                """,
+                threshold=score_threshold,
+                limit=limit,
+            )
+            return await result.data()
+
+    async def graph_data(self) -> list[dict[str, Any]]:
+        """모든 Document 노드 반환 (그래프 시각화용, 관리자 전용)."""
         async with self._driver.session() as s:
             result = await s.run(
                 """
                 MATCH (d:Document)
+                RETURN d.id AS id, d.title AS title, d.category AS category,
+                       d.source_type AS source_type, d.source_url AS source_url,
+                       d.summary_text AS summary_text, d.user_id AS user_id,
+                       toString(d.created_at) AS created_at
+                ORDER BY d.created_at DESC
+                LIMIT 500
+                """
+            )
+            return await result.data()
+
+    async def delete_document(self, document_id: str) -> bool:
+        """Document와 관련 Chunk 노드 및 관계를 모두 삭제. Tag 노드는 유지."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (d:Document {id: $id})
+                OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+                DETACH DELETE c, d
+                RETURN count(d) AS deleted
+                """,
+                id=document_id,
+            )
+            record = await result.single()
+            return bool(record and record["deleted"] > 0)
+
+    async def list_categories(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        doc_filter = _build_doc_filter(None, user_id)
+        async with self._driver.session() as s:
+            result = await s.run(
+                f"""
+                MATCH (d:Document)
+                {doc_filter}
                 RETURN d.category AS category, count(d) AS document_count
                 ORDER BY document_count DESC
-                """
+                """,
+                user_id=user_id,
             )
             return await result.data()

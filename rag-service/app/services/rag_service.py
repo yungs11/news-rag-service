@@ -46,10 +46,13 @@ class RagService:
         summary_text: str,
         raw_text: str,
         summary_date: str | None,
+        user_id: str | None = None,
     ) -> tuple[str, bool]:
-        # 청킹: summary 우선, raw 보조
+        # 청킹: summary 우선, raw 보조 (raw는 임베딩 시간 절약을 위해 상한 적용)
+        _max_raw = 20_000
+        embed_raw = raw_text[:_max_raw]
         summary_chunks = _chunks(summary_text, chunk_size=700, overlap=80)
-        raw_chunks = _chunks(raw_text, chunk_size=900, overlap=150)
+        raw_chunks = _chunks(embed_raw, chunk_size=900, overlap=150)
 
         all_texts = [(t, "summary") for t in summary_chunks] + [(t, "raw") for t in raw_chunks]
         texts_only = [t for t, _ in all_texts]
@@ -69,19 +72,24 @@ class RagService:
             raw_text=raw_text,
             summary_date=summary_date,
             chunk_embeddings=chunk_embeddings,
+            user_id=user_id,
         )
 
-    async def search(self, query: str, limit: int, category: str | None) -> list[dict]:
+    async def delete_document(self, document_id: str) -> bool:
+        return await self.store.delete_document(document_id)
+
+    async def search(self, query: str, limit: int, category: str | None, user_id: str | None = None) -> list[dict]:
         query_embedding = await self.embedder.embed(query)
         return await self.store.hybrid_search(
             query=query,
             query_embedding=query_embedding,
             limit=limit,
             category=category,
+            user_id=user_id,
         )
 
-    async def ask(self, query: str, limit: int, category: str | None) -> dict:
-        hits = await self.search(query, limit, category)
+    async def ask(self, query: str, limit: int, category: str | None, user_id: str | None = None) -> dict:
+        hits = await self.search(query, limit, category, user_id=user_id)
         if not hits:
             return {
                 "answer": "저장된 지식에서 관련 문서를 찾지 못했습니다.",
@@ -117,7 +125,6 @@ class RagService:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.2,
-            "max_tokens": 800,
         }
         headers = {
             "Authorization": f"Bearer {self.settings.openrouter_api_key}",

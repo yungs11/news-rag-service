@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-SourceType = Literal["youtube", "news", "blog", "other"]
+SourceType = Literal["youtube", "news", "blog", "pdf", "docx", "other"]
 Category = Literal["AI/LLM", "Infra", "DB", "Product", "Business", "Financial", "Other"]
 
 
@@ -16,6 +16,7 @@ class IngestRequest(BaseModel):
     summary_text: str
     raw_text: str
     summary_date: date | None = None
+    user_id: str | None = None
 
 
 class IngestResponse(BaseModel):
@@ -27,6 +28,7 @@ class SearchRequest(BaseModel):
     query: str
     limit: int = Field(default=5, ge=1, le=20)
     category: Category | None = None
+    user_id: str | None = None
 
 
 class SearchItem(BaseModel):
@@ -50,6 +52,7 @@ class AskRequest(BaseModel):
     query: str
     limit: int = Field(default=6, ge=1, le=20)
     category: Category | None = None
+    user_id: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -83,3 +86,19 @@ class CategoryItem(BaseModel):
 
 class CategoriesResponse(BaseModel):
     items: list[CategoryItem]
+
+
+class SummarizeRequest(BaseModel):
+    url: str
+    user_id: str | None = None
+
+
+class SummarizeResponse(BaseModel):
+    status: Literal["ok", "failed"]
+    message: str
+    summary: str | None = None
+    title: str | None = None
+    category: str | None = None
+    source_type: str | None = None
+    document_id: str | None = None
+    created: bool | None = None

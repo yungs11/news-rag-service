@@ -7,3 +7,10 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* 모바일 기본 폰트 크기 상향 */
+@media (max-width: 640px) {
+  html {
+    font-size: 17px;
+  }
+}

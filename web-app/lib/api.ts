@@ -1,3 +1,5 @@
+import { getUserId, isAdmin } from "./auth";
+
 const BASE = "/api/rag";
 
 export type SourceType = "youtube" | "news" | "blog" | "other";
@@ -31,6 +33,11 @@ export interface CategoryItem {
   document_count: number;
 }
 
+function _userIdParam(): string | null {
+  if (isAdmin()) return null; // admin: no filter
+  return getUserId();
+}
+
 async function post<T>(path: string, body: object): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
@@ -53,6 +60,7 @@ export const api = {
       query,
       limit,
       category,
+      user_id: _userIdParam(),
     }),
 
   ask: (query: string, limit = 6, category?: Category) =>
@@ -60,12 +68,50 @@ export const api = {
       query,
       limit,
       category,
+      user_id: _userIdParam(),
     }),
 
-  recentDocuments: (limit = 20) =>
-    get<{ count: number; items: DocumentDetail[] }>(`/documents/recent?limit=${limit}`),
+  recentDocuments: (limit = 20) => {
+    const uid = _userIdParam();
+    const qs = uid ? `&user_id=${encodeURIComponent(uid)}` : "";
+    return get<{ count: number; items: DocumentDetail[] }>(`/documents/recent?limit=${limit}${qs}`);
+  },
 
-  categories: () => get<{ items: CategoryItem[] }>("/documents/categories"),
+  categories: () => {
+    const uid = _userIdParam();
+    const qs = uid ? `?user_id=${encodeURIComponent(uid)}` : "";
+    return get<{ items: CategoryItem[] }>(`/documents/categories${qs}`);
+  },
 
   getDocument: (id: string) => get<DocumentDetail>(`/documents/${id}`),
+
+  deleteDocument: async (id: string) => {
+    const res = await fetch(`${BASE}/documents/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<{ ok: boolean; id: string }>;
+  },
+
+  summarize: (url: string) => {
+    const uid = _userIdParam();
+    return post<{ status: string; message: string; title?: string; category?: string; summary?: string }>("/summarize", {
+      url,
+      user_id: uid,
+    });
+  },
+
+  summarizeUpload: async (file: File) => {
+    const uid = _userIdParam();
+    const form = new FormData();
+    form.append("file", file);
+    if (uid) form.append("user_id", uid);
+    const res = await fetch(`${BASE}/summarize/upload`, { method: "POST", body: form });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<{ status: string; message: string; title?: string; category?: string; summary?: string }>;
+  },
+
+  graphData: () =>
+    get<{
+      nodes: { id: string; label: string; type: "category" | "document"; category?: string; source_url?: string; source_type?: string; summary_text?: string; user_id?: string }[];
+      links: { source: string; target: string }[];
+    }>("/graph"),
 };
