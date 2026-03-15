@@ -24,13 +24,15 @@ def _chunks(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
     return out
 
 
-def _build_doc_filter(category: str | None, user_id: str | None) -> str:
+def _build_doc_filter(category: str | None, user_id: str | None, document_id: str | None = None) -> str:
     """Build WHERE clause for Document node filtering."""
     clauses = []
     if category:
         clauses.append("d.category = $category")
     if user_id:
         clauses.append("d.user_id = $user_id")
+    if document_id:
+        clauses.append("d.id = $document_id")
     return ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
 
@@ -180,8 +182,9 @@ class Neo4jStore:
         category: str | None = None,
         score_threshold: float = 0.5,
         user_id: str | None = None,
+        document_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        doc_filter = _build_doc_filter(category, user_id)
+        doc_filter = _build_doc_filter(category, user_id, document_id)
         async with self._driver.session() as s:
             result = await s.run(
                 f"""
@@ -205,6 +208,7 @@ class Neo4jStore:
                 embedding=embedding,
                 category=category,
                 user_id=user_id,
+                document_id=document_id,
                 limit=limit,
                 score_threshold=score_threshold,
             )
@@ -216,11 +220,12 @@ class Neo4jStore:
         limit: int,
         category: str | None = None,
         user_id: str | None = None,
+        document_id: str | None = None,
     ) -> list[dict[str, Any]]:
         # Lucene: escape special chars, use OR for multi-token
         tokens = re.findall(r"[0-9A-Za-z가-힣]{2,}", query)
         fts_query = " OR ".join(f"{t}*" for t in tokens) if tokens else query
-        doc_filter = _build_doc_filter(category, user_id)
+        doc_filter = _build_doc_filter(category, user_id, document_id)
         async with self._driver.session() as s:
             try:
                 result = await s.run(
@@ -243,6 +248,7 @@ class Neo4jStore:
                     fts_query=fts_query,
                     category=category,
                     user_id=user_id,
+                    document_id=document_id,
                     limit=limit,
                 )
                 return await result.data()
@@ -257,10 +263,11 @@ class Neo4jStore:
         limit: int,
         category: str | None = None,
         user_id: str | None = None,
+        document_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Vector + fulltext search merged with Reciprocal Rank Fusion."""
-        vector_results = await self.vector_search(query_embedding, limit, category, user_id=user_id)
-        fts_results = await self.fulltext_search(query, limit, category, user_id=user_id)
+        vector_results = await self.vector_search(query_embedding, limit, category, user_id=user_id, document_id=document_id)
+        fts_results = await self.fulltext_search(query, limit, category, user_id=user_id, document_id=document_id)
 
         # RRF merge (k=60)
         rrf_k = 60

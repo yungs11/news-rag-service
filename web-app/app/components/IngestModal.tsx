@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import SummaryRenderer from "./SummaryRenderer";
 
 type Tab = "url" | "file";
-type Phase = "idle" | "loading" | "done" | "error";
+type Phase = "idle" | "loading" | "done" | "exists" | "error";
 
 interface Result {
   title?: string;
@@ -38,9 +38,13 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
         res = await api.summarizeUpload(file);
       }
       if (res.status === "ok") {
-        setResult({ title: res.title, category: res.category, summary: res.summary, message: res.message });
-        setPhase("done");
-        onSuccess();
+        if (res.created === false) {
+          setResult({ message: "이미 등록된 문서입니다." });
+          setPhase("exists");
+        } else {
+          setPhase("done");
+          onSuccess();
+        }
       } else {
         setResult({ message: res.message || "요약에 실패했습니다." });
         setPhase("error");
@@ -73,7 +77,7 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/40 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={phase === "loading" ? undefined : onClose}
     >
       <div
         className="bg-white w-full sm:rounded-2xl sm:max-w-md shadow-xl flex flex-col rounded-t-2xl"
@@ -174,6 +178,13 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
             </div>
           )}
 
+          {phase === "exists" && result && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <p className="text-xs font-semibold text-amber-700 mb-1">알림</p>
+              <p className="text-xs text-amber-600">{result.message}</p>
+            </div>
+          )}
+
           {phase === "error" && result && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-4">
               <p className="text-xs font-semibold text-red-700 mb-1">오류</p>
@@ -184,7 +195,14 @@ export default function IngestModal({ onClose, onSuccess }: { onClose: () => voi
 
         {/* Footer */}
         <div className="px-5 pb-5 flex gap-3">
-          {phase === "done" ? (
+          {phase === "exists" ? (
+            <button
+              onClick={onClose}
+              className="flex-1 bg-blue-600 text-white text-sm font-medium py-3 rounded-xl hover:bg-blue-700 transition-colors"
+            >
+              닫기
+            </button>
+          ) : phase === "done" ? (
             <>
               <button
                 onClick={() => { setUrl(""); setFile(null); reset(); }}

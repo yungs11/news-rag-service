@@ -7,6 +7,8 @@ export interface ChatSession {
   user_id: string | null;
   title: string;
   category: string | null;
+  doc_id: string | null;
+  doc_title: string | null;
   created_at: string;
   updated_at: string;
   message_count: number;
@@ -32,11 +34,16 @@ export async function getSessions(): Promise<ChatSession[]> {
   return data.sessions ?? [];
 }
 
-export async function createSession(title: string, category?: string): Promise<ChatSession> {
+export async function createSession(
+  title: string, category?: string, docId?: string, docTitle?: string
+): Promise<ChatSession> {
   const res = await fetch(`${BASE}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, user_id: _userIdParam(), category: category ?? null }),
+    body: JSON.stringify({
+      title, user_id: _userIdParam(), category: category ?? null,
+      doc_id: docId ?? null, doc_title: docTitle ?? null,
+    }),
   });
   if (!res.ok) throw new Error("Failed to create session");
   return res.json();

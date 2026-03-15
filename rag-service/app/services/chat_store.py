@@ -18,11 +18,22 @@ async def init_db() -> None:
                 user_id TEXT,
                 title TEXT NOT NULL,
                 category TEXT,
+                doc_id TEXT,
+                doc_title TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 message_count INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # 기존 DB 마이그레이션 (컬럼 없으면 추가)
+        try:
+            await db.execute("ALTER TABLE chat_sessions ADD COLUMN doc_id TEXT")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE chat_sessions ADD COLUMN doc_title TEXT")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,17 +70,18 @@ async def list_sessions(user_id: str | None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def create_session(title: str, user_id: str | None, category: str | None) -> dict:
+async def create_session(title: str, user_id: str | None, category: str | None,
+                        doc_id: str | None = None, doc_title: str | None = None) -> dict:
     session_id = str(uuid.uuid4())
     now = _now()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO chat_sessions (id, user_id, title, category, created_at, updated_at, message_count) VALUES (?,?,?,?,?,?,0)",
-            (session_id, user_id, title[:80], category, now, now),
+            "INSERT INTO chat_sessions (id, user_id, title, category, doc_id, doc_title, created_at, updated_at, message_count) VALUES (?,?,?,?,?,?,?,?,0)",
+            (session_id, user_id, title[:80], category, doc_id, doc_title, now, now),
         )
         await db.commit()
     return {"id": session_id, "user_id": user_id, "title": title[:80], "category": category,
-            "created_at": now, "updated_at": now, "message_count": 0}
+            "doc_id": doc_id, "doc_title": doc_title, "created_at": now, "updated_at": now, "message_count": 0}
 
 
 async def get_session_with_messages(session_id: str) -> dict | None:

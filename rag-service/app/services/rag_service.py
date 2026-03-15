@@ -14,6 +14,11 @@ RAG_SYSTEM_PROMPT = (
     "주어진 문맥에 근거해서만 답하고, 근거가 없으면 '확인 불가'라고 명시하세요."
 )
 
+CONV_SYSTEM_PROMPT = (
+    "당신은 AI Architect의 지식베이스 기반 어시스턴트입니다. "
+    "이전 대화 내역을 참고하여 사용자의 질문에 한국어로 친절하게 답변하세요."
+)
+
 RAG_USER_PROMPT = """
 아래 검색 문맥을 참고하여 질문에 답변하세요.
 
@@ -76,7 +81,8 @@ class RagService:
     async def delete_document(self, document_id: str) -> bool:
         return await self.store.delete_document(document_id)
 
-    async def search(self, query: str, limit: int, category: str | None, user_id: str | None = None) -> list[dict]:
+    async def search(self, query: str, limit: int, category: str | None, user_id: str | None = None,
+                     document_id: str | None = None) -> list[dict]:
         query_embedding = await self.embedder.embed(query)
         return await self.store.hybrid_search(
             query=query,
@@ -84,11 +90,17 @@ class RagService:
             limit=limit,
             category=category,
             user_id=user_id,
+            document_id=document_id,
         )
 
-    async def ask(self, query: str, limit: int, category: str | None, user_id: str | None = None) -> dict:
-        hits = await self.search(query, limit, category, user_id=user_id)
+    async def ask(self, query: str, limit: int, category: str | None, user_id: str | None = None,
+                  document_id: str | None = None, history: list[dict] | None = None) -> dict:
+        hits = await self.search(query, limit, category, user_id=user_id, document_id=document_id)
         if not hits:
+            if history:
+                # RAG 문서가 없어도 대화 히스토리로 멀티턴 답변 (대화형 프롬프트 사용)
+                answer = await self._generate(query, history=history, system_prompt=CONV_SYSTEM_PROMPT)
+                return {"answer": answer, "sources": [], "hits": []}
             return {
                 "answer": "저장된 지식에서 관련 문서를 찾지 못했습니다.",
                 "sources": [],
@@ -108,20 +120,23 @@ class RagService:
         context = "\n\n".join(context_parts)
         prompt = RAG_USER_PROMPT.replace("{query}", query).replace("{context}", context)
 
-        answer = await self._generate(prompt)
+        answer = await self._generate(prompt, history=history)
         return {
             "answer": answer,
             "sources": seen_urls[:3],
             "hits": hits,
         }
 
-    async def _generate(self, user_prompt: str) -> str:
+    async def _generate(self, user_prompt: str, history: list[dict] | None = None,
+                        system_prompt: str | None = None) -> str:
+        messages: list[dict] = [{"role": "system", "content": system_prompt or RAG_SYSTEM_PROMPT}]
+        # 이전 대화 턴 포함 (최근 6개 메시지 = 3턴)
+        if history:
+            messages.extend(history[-6:])
+        messages.append({"role": "user", "content": user_prompt})
         payload = {
             "model": self.settings.openrouter_rag_model,
-            "messages": [
-                {"role": "system", "content": RAG_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": messages,
             "temperature": 0.2,
         }
         headers = {

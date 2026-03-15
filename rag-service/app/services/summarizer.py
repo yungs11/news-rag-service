@@ -45,6 +45,7 @@ async def summarize_content(
         sys_prompt = YOUTUBE_SYSTEM_PROMPT
         tmpl = YOUTUBE_USER_PROMPT_TEMPLATE
     else:
+        # 뉴스·블로그·웹 등 나머지 모두 동일 템플릿
         sys_prompt = system_prompt
         tmpl = user_prompt_template
 

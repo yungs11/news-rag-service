@@ -44,13 +44,27 @@ async function post<T>(path: string, body: object): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = `${res.status}: ${typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)}`;
+    } catch {}
+    throw new Error(detail);
+  }
   return res.json();
 }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = `${res.status}: ${typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)}`;
+    } catch {}
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -63,12 +77,15 @@ export const api = {
       user_id: _userIdParam(),
     }),
 
-  ask: (query: string, limit = 6, category?: Category) =>
+  ask: (query: string, limit = 6, category?: Category, documentId?: string,
+        history?: { role: string; content: string }[]) =>
     post<{ query: string; answer: string; sources: string[]; hits: SearchItem[] }>("/ask", {
       query,
       limit,
       category,
       user_id: _userIdParam(),
+      document_id: documentId,
+      history,
     }),
 
   recentDocuments: (limit = 20) => {
@@ -93,7 +110,7 @@ export const api = {
 
   summarize: (url: string) => {
     const uid = _userIdParam();
-    return post<{ status: string; message: string; title?: string; category?: string; summary?: string }>("/summarize", {
+    return post<{ status: string; message: string; title?: string; category?: string; summary?: string; created?: boolean }>("/summarize", {
       url,
       user_id: uid,
     });
@@ -106,7 +123,7 @@ export const api = {
     if (uid) form.append("user_id", uid);
     const res = await fetch(`${BASE}/summarize/upload`, { method: "POST", body: form });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json() as Promise<{ status: string; message: string; title?: string; category?: string; summary?: string }>;
+    return res.json() as Promise<{ status: string; message: string; title?: string; category?: string; summary?: string; created?: boolean }>;
   },
 
   graphData: () =>

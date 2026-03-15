@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { api, Category } from "@/lib/api";
 import {
   ChatSession,
@@ -33,7 +34,11 @@ const EXAMPLES = [
   "MLOps 파이프라인 구성 시 주요 고려사항은?",
 ];
 
-export default function ChatPage() {
+function ChatPageInner() {
+  const searchParams = useSearchParams();
+  const docId = searchParams.get("doc_id") ?? undefined;
+  const docTitle = searchParams.get("title") ?? undefined;
+
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -94,14 +99,16 @@ export default function ChatPage() {
 
     let sessionId = currentSessionId;
     if (!sessionId) {
-      const session = await createSession(q, category);
+      const session = await createSession(q, category, docId, docTitle);
       sessionId = session.id;
       setCurrentSessionId(sessionId);
       setSessions((prev) => [session, ...prev]);
     }
 
     try {
-      const result = await api.ask(q, 6, category);
+      // 현재 세션의 이전 메시지를 history로 전달 (멀티턴)
+      const history = messages.map((m) => ({ role: m.role, content: m.content }));
+      const result = await api.ask(q, 6, category, docId, history.length > 0 ? history : undefined);
       const aiMsg: Message = {
         role: "assistant",
         content: result.answer,
@@ -143,21 +150,27 @@ export default function ChatPage() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
           </svg>
         </button>
-        <div className="flex-1 overflow-x-auto flex gap-1.5 scrollbar-none">
-          {CATEGORIES.map((c) => (
-            <button
-              key={c.label}
-              onClick={() => setCategory(c.value)}
-              className={`shrink-0 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
-                category === c.value
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 text-gray-600"
-              }`}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
+        {docId && docTitle ? (
+          <span className="flex-1 text-xs bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 rounded-full font-medium truncate" title={docTitle}>
+            📄 {docTitle}
+          </span>
+        ) : (
+          <div className="flex-1 overflow-x-auto flex gap-1.5 scrollbar-none">
+            {CATEGORIES.map((c) => (
+              <button
+                key={c.label}
+                onClick={() => setCategory(c.value)}
+                className={`shrink-0 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
+                  category === c.value
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
         <button
           onClick={newChat}
           className="shrink-0 p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
@@ -198,6 +211,9 @@ export default function ChatPage() {
                   >
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-gray-700 truncate leading-snug">{s.title}</p>
+                      {s.doc_title && (
+                        <p className="text-[10px] text-blue-500 truncate mt-0.5">📄 {s.doc_title}</p>
+                      )}
                       <p className="text-xs text-gray-400 mt-0.5">{formatDate(s.updated_at)} · {s.message_count}개</p>
                     </div>
                     <button
@@ -254,6 +270,9 @@ export default function ChatPage() {
                 >
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-gray-700 truncate leading-snug">{s.title}</p>
+                    {s.doc_title && (
+                      <p className="text-[10px] text-blue-500 truncate mt-0.5">📄 {s.doc_title}</p>
+                    )}
                     <p className="text-[10px] text-gray-400 mt-0.5">{formatDate(s.updated_at)} · {s.message_count}개</p>
                   </div>
                   <button
@@ -274,7 +293,12 @@ export default function ChatPage() {
         <div className="hidden sm:flex px-5 py-3.5 border-b border-gray-100 items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
           <span className="text-sm font-semibold text-gray-700">AI Knowledge 챗봇</span>
-          {category && (
+          {docId && docTitle && (
+            <span className="ml-2 text-xs bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-0.5 rounded-full font-medium truncate max-w-xs" title={docTitle}>
+              📄 {docTitle}
+            </span>
+          )}
+          {category && !docId && (
             <span className="ml-auto text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md font-medium">{category}</span>
           )}
         </div>
@@ -389,5 +413,13 @@ export default function ChatPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense>
+      <ChatPageInner />
+    </Suspense>
   );
 }

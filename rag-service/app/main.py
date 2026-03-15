@@ -13,6 +13,7 @@ from app.config import Settings
 from app.schemas import (
     AskRequest,
     AskResponse,
+    HistoryMessage,
     CategoriesResponse,
     CategoryItem,
     DocumentDetail,
@@ -160,7 +161,9 @@ async def search(req: SearchRequest):
 
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest):
-    result = await rag.ask(req.query, req.limit, req.category, user_id=req.user_id)
+    history = [{"role": h.role, "content": h.content} for h in req.history] if req.history else None
+    result = await rag.ask(req.query, req.limit, req.category, user_id=req.user_id,
+                           document_id=req.document_id, history=history)
     hits = [_to_search_item(h) for h in result["hits"]]
     return AskResponse(
         query=req.query,
@@ -202,6 +205,8 @@ class CreateSessionRequest(BaseModel):
     title: str
     user_id: str | None = None
     category: str | None = None
+    doc_id: str | None = None
+    doc_title: str | None = None
 
 
 class AppendMessagesRequest(BaseModel):
@@ -216,7 +221,7 @@ async def chat_list_sessions(user_id: str | None = None):
 
 @app.post("/chat/sessions", status_code=201)
 async def chat_create_session(req: CreateSessionRequest):
-    session = await create_session(req.title, req.user_id, req.category)
+    session = await create_session(req.title, req.user_id, req.category, req.doc_id, req.doc_title)
     return session
 
 
@@ -387,7 +392,14 @@ async def summarize(req: SummarizeRequest):
             message=f"[요약 불가] {req.url}\n\n콘텐츠를 가져올 수 없습니다: {exc}",
         )
 
-    result = await _run_summarize_pipeline(content, req.user_id)
+    try:
+        result = await _run_summarize_pipeline(content, req.user_id)
+    except Exception as exc:
+        logger.exception("Pipeline failed: url=%s reason=%s", req.url, exc)
+        return SummarizeResponse(
+            status="failed",
+            message=f"[처리 오류] {req.url}\n\n요약 처리 중 오류가 발생했습니다: {exc}",
+        )
     logger.info("Summarize(url) done: url=%s status=%s elapsed=%.2fs", req.url, result.status, time.perf_counter() - started)
     return result
 
@@ -426,7 +438,14 @@ async def summarize_upload(
     if title:
         content.title = title
 
-    result = await _run_summarize_pipeline(content, user_id)
+    try:
+        result = await _run_summarize_pipeline(content, user_id)
+    except Exception as exc:
+        logger.exception("Pipeline failed: filename=%s reason=%s", filename, exc)
+        return SummarizeResponse(
+            status="failed",
+            message=f"[처리 오류] {filename}\n\n요약 처리 중 오류가 발생했습니다: {exc}",
+        )
     logger.info("Summarize(upload) done: filename=%s status=%s elapsed=%.2fs", filename, result.status, time.perf_counter() - started)
     return result
 

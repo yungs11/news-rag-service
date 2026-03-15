@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
 import IngestModal from "./components/IngestModal";
 import SummaryRenderer from "./components/SummaryRenderer";
@@ -44,6 +45,7 @@ function StatCard({ label, value }: { label: string; value: number | string }) {
 
 /* ── Summary Modal ── */
 function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => void }) {
+  const router = useRouter();
   const [tab, setTab] = useState<"summary" | "raw">("summary");
   const [fullDoc, setFullDoc] = useState<DocumentDetail | null>(null);
   const [loadingRaw, setLoadingRaw] = useState(false);
@@ -138,7 +140,18 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-gray-100 flex justify-end">
+        <div className="p-4 border-t border-gray-100 flex items-center justify-between">
+          {doc.id ? (
+            <button
+              onClick={() => { onClose(); router.push(`/chat?doc_id=${doc.id}&title=${encodeURIComponent(doc.title || "")}`); }}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 transition-colors font-medium"
+            >
+              이 문서에 대해 질의하기
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ) : <span />}
           <button
             onClick={onClose}
             className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg transition-colors"

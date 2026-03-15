@@ -23,10 +23,13 @@ function parse(text: string): Section[] {
 
   for (const raw of text.split("\n")) {
     const line = raw.trimEnd();
-    const sectionMatch = line.match(/^-?\s*\[(.+?)\]\s*$/);
+    // "- [섹션명]" 또는 "- [섹션명]: 인라인내용" 모두 섹션 헤더로 인식
+    const sectionMatch = line.match(/^-?\s*\[(.+?)\](?:\s*[：:]\s*(.+))?$/);
     if (sectionMatch) {
       if (current) sections.push(current);
       current = { name: sectionMatch[1], lines: [] };
+      // 콜론 뒤 인라인 내용이 있으면 섹션 첫 줄로 추가
+      if (sectionMatch[2]) current.lines.push(sectionMatch[2]);
       continue;
     }
     if (current) {
@@ -38,8 +41,7 @@ function parse(text: string): Section[] {
 }
 
 function renderLines(lines: string[]) {
-  const trimmed = lines.map((l) => l.trim()).filter(Boolean);
-  if (trimmed.length === 0) return null;
+  if (lines.every((l) => !l.trim())) return null;
 
   const elements: React.ReactNode[] = [];
   let listItems: string[] = [];
@@ -69,11 +71,15 @@ function renderLines(lines: string[]) {
     listType = null;
   };
 
-  for (const line of trimmed) {
-    const numberedMatch = line.match(/^\d+[\.\)]\s+(.+)/);
-    const bulletMatch = line.match(/^[-•]\s+(.+)/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const numberedMatch = trimmed.match(/^\d+[\.\)]\s+(.+)/);
+    const bulletMatch = trimmed.match(/^[-•]\s+(.+)/);
 
-    if (numberedMatch) {
+    if (!trimmed) {
+      // 빈 줄: 현재 목록 flush, 단락 구분
+      flushList();
+    } else if (numberedMatch) {
       if (listType === "ul") flushList();
       listType = "ol";
       listItems.push(numberedMatch[1]);
@@ -84,12 +90,12 @@ function renderLines(lines: string[]) {
     } else {
       flushList();
       elements.push(
-        <p key={elements.length} className="text-sm text-gray-700 leading-relaxed">{line}</p>
+        <p key={elements.length} className="text-sm text-gray-700 leading-relaxed">{trimmed}</p>
       );
     }
   }
   flushList();
-  return elements;
+  return elements.length > 0 ? elements : null;
 }
 
 export default function SummaryRenderer({ text }: { text: string | null | undefined }) {

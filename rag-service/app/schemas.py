@@ -48,11 +48,18 @@ class SearchResponse(BaseModel):
     items: list[SearchItem]
 
 
+class HistoryMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
 class AskRequest(BaseModel):
     query: str
     limit: int = Field(default=6, ge=1, le=20)
     category: Category | None = None
     user_id: str | None = None
+    document_id: str | None = None
+    history: list[HistoryMessage] | None = None
 
 
 class AskResponse(BaseModel):
