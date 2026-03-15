@@ -5,11 +5,15 @@ __pycache__/
 .venv/
 venv/
 data/
+chat_history.db
 
 # Next.js
 web-app/.next/
 web-app/node_modules/
 web-app/.env.local
+
+# Sibling project (separate git repo)
+summ_kakaobot/
 
 # IDE
 .vscode/

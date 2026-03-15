@@ -15,8 +15,7 @@ if [ -n "$PID" ]; then
 fi
 
 echo "rag-service 시작 중 (port 8000)..."
-source .venv/bin/activate
-nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$LOG_FILE" 2>&1 &
+nohup .venv/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$LOG_FILE" 2>&1 &
 echo "PID: $!"
 
 # 헬스체크
