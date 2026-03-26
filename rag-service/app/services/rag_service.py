@@ -94,11 +94,18 @@ class RagService:
         )
 
     async def ask(self, query: str, limit: int, category: str | None, user_id: str | None = None,
-                  document_id: str | None = None, history: list[dict] | None = None) -> dict:
+                  document_id: str | None = None, history: list[dict] | None = None,
+                  attached_context: str | None = None) -> dict:
         hits = await self.search(query, limit, category, user_id=user_id, document_id=document_id)
-        if not hits:
+
+        # 첨부 파일 컨텍스트 (최대 8000자)
+        attached_part = ""
+        if attached_context:
+            trimmed = attached_context[:8000]
+            attached_part = f"\n\n첨부 파일 내용:\n{trimmed}"
+
+        if not hits and not attached_context:
             if history:
-                # RAG 문서가 없어도 대화 히스토리로 멀티턴 답변 (대화형 프롬프트 사용)
                 answer = await self._generate(query, history=history, system_prompt=CONV_SYSTEM_PROMPT)
                 return {"answer": answer, "sources": [], "hits": []}
             return {
@@ -117,7 +124,7 @@ class RagService:
                 f"[{i}] title={hit.get('title', '')} category={hit.get('category', '')} "
                 f"url={url}\n{hit.get('chunk_text', '')}"
             )
-        context = "\n\n".join(context_parts)
+        context = "\n\n".join(context_parts) + attached_part
         prompt = RAG_USER_PROMPT.replace("{query}", query).replace("{context}", context)
 
         answer = await self._generate(prompt, history=history)

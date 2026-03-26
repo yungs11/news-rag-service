@@ -17,7 +17,7 @@ news-rag-db/
 cd rag-service
 pip install -r requirements.txt
 cp .env.example .env   # 환경변수 입력
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8003
 ```
 
 ### 주요 환경변수

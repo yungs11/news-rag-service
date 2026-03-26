@@ -30,6 +30,7 @@ from app.services.content_extractor import (
     ExtractedContent,
     extract_content,
     extract_from_docx,
+    extract_from_excel,
     extract_from_pdf,
     is_valid_content,
 )
@@ -167,6 +168,64 @@ async def ask(req: AskRequest):
     hits = [_to_search_item(h) for h in result["hits"]]
     return AskResponse(
         query=req.query,
+        answer=result["answer"],
+        sources=result["sources"],
+        hits=hits,
+    )
+
+
+@app.post("/ask/upload", response_model=AskResponse)
+async def ask_with_file(
+    query: str = Form(...),
+    file: UploadFile = File(...),
+    limit: int = Form(6),
+    category: str | None = Form(None),
+    user_id: str | None = Form(None),
+    document_id: str | None = Form(None),
+    history: str | None = Form(None),
+):
+    """파일 첨부 질문: 파일 내용을 추출하여 RAG 컨텍스트에 포함합니다."""
+    import json as _json
+
+    filename = file.filename or "unnamed"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if ext not in ("pdf", "docx", "xlsx", "xls"):
+        raise HTTPException(status_code=400, detail="PDF, Word(.docx), Excel(.xlsx) 파일만 지원합니다.")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+
+    try:
+        if ext == "pdf":
+            extracted = await asyncio.to_thread(extract_from_pdf, file_bytes, filename)
+        elif ext in ("xlsx", "xls"):
+            extracted = await asyncio.to_thread(extract_from_excel, file_bytes, filename)
+        else:
+            extracted = await asyncio.to_thread(extract_from_docx, file_bytes, filename)
+    except Exception as exc:
+        logger.warning("File extraction failed: filename=%s reason=%s", filename, exc)
+        raise HTTPException(status_code=400, detail=f"파일에서 텍스트를 추출할 수 없습니다: {exc}")
+
+    attached_context = extracted.content
+    logger.info("Ask with file: filename=%s chars=%d query=%r", filename, len(attached_context), query[:100])
+
+    parsed_history = None
+    if history:
+        try:
+            parsed_history = [{"role": h["role"], "content": h["content"]} for h in _json.loads(history)]
+        except Exception:
+            pass
+
+    result = await rag.ask(
+        query, limit, category if category else None, user_id=user_id,
+        document_id=document_id, history=parsed_history,
+        attached_context=attached_context,
+    )
+    hits = [_to_search_item(h) for h in result["hits"]]
+    return AskResponse(
+        query=query,
         answer=result["answer"],
         sources=result["sources"],
         hits=hits,

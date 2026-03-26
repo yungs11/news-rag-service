@@ -703,6 +703,35 @@ def extract_from_pdf(file_bytes: bytes, filename: str) -> ExtractedContent:
     return ExtractedContent(url=f"upload://{filename}", source_type="pdf", title=title, content=content)
 
 
+def extract_from_excel(file_bytes: bytes, filename: str) -> ExtractedContent:
+    """Excel(.xlsx) 파일 바이트에서 텍스트를 추출합니다."""
+    from io import BytesIO
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("openpyxl 패키지가 설치되지 않았습니다.") from exc
+
+    wb = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    parts: list[str] = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        sheet_rows: list[str] = []
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            if cells:
+                sheet_rows.append("\t".join(cells))
+        if sheet_rows:
+            parts.append(f"[Sheet: {sheet_name}]\n" + "\n".join(sheet_rows))
+
+    wb.close()
+    title = filename.rsplit(".", 1)[0]
+    content = _clean_text("\n\n".join(parts))
+    logger.info("Excel extraction done: filename=%s sheets=%d chars=%d", filename, len(wb.sheetnames), len(content))
+    return ExtractedContent(url=f"upload://{filename}", source_type="xlsx", title=title, content=content)
+
+
 def extract_from_docx(file_bytes: bytes, filename: str) -> ExtractedContent:
     """Word(.docx) 파일 바이트에서 텍스트를 추출합니다."""
     from io import BytesIO

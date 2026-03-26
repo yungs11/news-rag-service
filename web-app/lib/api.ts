@@ -88,6 +88,35 @@ export const api = {
       history,
     }),
 
+  askWithFile: async (
+    query: string,
+    file: File,
+    limit = 6,
+    category?: Category,
+    documentId?: string,
+    history?: { role: string; content: string }[],
+  ) => {
+    const uid = _userIdParam();
+    const form = new FormData();
+    form.append("file", file);
+    form.append("query", query);
+    form.append("limit", String(limit));
+    if (category) form.append("category", category);
+    if (uid) form.append("user_id", uid);
+    if (documentId) form.append("document_id", documentId);
+    if (history && history.length > 0) form.append("history", JSON.stringify(history));
+    const res = await fetch(`${BASE}/ask/upload`, { method: "POST", body: form });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = `${res.status}: ${typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)}`;
+      } catch {}
+      throw new Error(detail);
+    }
+    return res.json() as Promise<{ query: string; answer: string; sources: string[]; hits: SearchItem[] }>;
+  },
+
   recentDocuments: (limit = 20) => {
     const uid = _userIdParam();
     const qs = uid ? `&user_id=${encodeURIComponent(uid)}` : "";

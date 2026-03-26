@@ -46,8 +46,10 @@ function ChatPageInner() {
   const [loading, setLoading] = useState(false);
   const [category, setCategory] = useState<Category | undefined>();
   const [showSidebar, setShowSidebar] = useState(false);
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadSessions = useCallback(async () => {
     const list = await getSessions();
@@ -108,7 +110,11 @@ function ChatPageInner() {
     try {
       // 현재 세션의 이전 메시지를 history로 전달 (멀티턴)
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
-      const result = await api.ask(q, 6, category, docId, history.length > 0 ? history : undefined);
+      const historyParam = history.length > 0 ? history : undefined;
+      const result = attachedFile
+        ? await api.askWithFile(q, attachedFile, 6, category, docId, historyParam)
+        : await api.ask(q, 6, category, docId, historyParam);
+      setAttachedFile(null);
       const aiMsg: Message = {
         role: "assistant",
         content: result.answer,
@@ -392,13 +398,50 @@ function ChatPageInner() {
 
         {/* Input */}
         <div className="p-3 sm:p-4 border-t border-gray-100 bg-white">
+          {attachedFile && (
+            <div className="flex items-center gap-2 mb-2 px-1">
+              <span className="inline-flex items-center gap-1.5 bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-1 rounded-lg text-xs font-medium max-w-xs truncate">
+                <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                </svg>
+                {attachedFile.name}
+              </span>
+              <button
+                onClick={() => setAttachedFile(null)}
+                className="text-gray-400 hover:text-red-400 transition-colors text-sm"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <div className="flex gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.xlsx,.xls"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) setAttachedFile(f);
+                e.target.value = "";
+              }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              className="shrink-0 p-3 rounded-xl border border-gray-200 text-gray-400 hover:text-blue-500 hover:border-blue-300 transition-colors disabled:opacity-40"
+              title="파일 첨부 (PDF, Excel)"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+            </button>
             <input
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
-              placeholder="질문을 입력하세요..."
+              placeholder={attachedFile ? "첨부 파일에 대해 질문하세요..." : "질문을 입력하세요..."}
               disabled={loading}
               className="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 min-w-0"
             />
