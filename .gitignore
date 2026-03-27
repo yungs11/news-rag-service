@@ -19,3 +19,6 @@ summ_kakaobot/
 .vscode/
 .idea/
 .claude/
+
+# macOS
+.DS_Store
