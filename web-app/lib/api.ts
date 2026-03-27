@@ -12,6 +12,7 @@ export interface SearchItem {
   category: string;
   source_type: string;
   summary_date: string | null;
+  summary_text: string;
   chunk_text: string;
   score: number;
 }

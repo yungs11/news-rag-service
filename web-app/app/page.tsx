@@ -48,21 +48,36 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
   const router = useRouter();
   const [tab, setTab] = useState<"summary" | "raw">("summary");
   const [fullDoc, setFullDoc] = useState<DocumentDetail | null>(null);
-  const [loadingRaw, setLoadingRaw] = useState(false);
+  const [loadingDoc, setLoadingDoc] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!doc.id) return;
+
+    setLoadingDoc(true);
+    api.getDocument(doc.id)
+      .then((detail) => {
+        if (!cancelled) setFullDoc(detail);
+      })
+      .catch(() => {
+        if (!cancelled) setFullDoc(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDoc(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.id]);
 
   const handleRawTab = async () => {
     setTab("raw");
-    if (!fullDoc && doc.id) {
-      setLoadingRaw(true);
-      try {
-        const d = await api.getDocument(doc.id);
-        setFullDoc(d);
-      } catch { /* ignore */ }
-      finally { setLoadingRaw(false); }
-    }
   };
 
-  const rawText = fullDoc?.raw_text ?? doc.raw_text;
+  const resolvedDoc = fullDoc ?? doc;
+  const rawText = resolvedDoc.raw_text;
 
   return (
     <div
@@ -79,9 +94,9 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
             <div className="flex items-center gap-2 mb-2 flex-wrap">
               <CategoryBadge category={doc.category} />
               <span className="text-xs text-gray-400">{SOURCE_ICONS[doc.source_type] ?? "🔗"} {doc.source_type}</span>
-              {doc.summary_date && <span className="text-xs text-gray-400">{doc.summary_date}</span>}
+              {resolvedDoc.summary_date && <span className="text-xs text-gray-400">{resolvedDoc.summary_date}</span>}
             </div>
-            <h2 className="text-sm font-bold text-gray-900 leading-snug">{doc.title || "Untitled"}</h2>
+            <h2 className="text-sm font-bold text-gray-900 leading-snug">{resolvedDoc.title || "Untitled"}</h2>
           </div>
           <button
             onClick={onClose}
@@ -118,8 +133,12 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
         {/* Body */}
         <div className="overflow-y-auto p-5 flex-1">
           {tab === "summary" ? (
-            <SummaryRenderer text={doc.summary_text} />
-          ) : loadingRaw ? (
+            loadingDoc && !fullDoc ? (
+              <p className="text-sm text-gray-400 text-center py-10">불러오는 중...</p>
+            ) : (
+              <SummaryRenderer text={resolvedDoc.summary_text} />
+            )
+          ) : loadingDoc && !fullDoc ? (
             <p className="text-sm text-gray-400 text-center py-10">불러오는 중...</p>
           ) : rawText ? (
             <div className="space-y-2">
@@ -143,7 +162,7 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
         <div className="p-4 border-t border-gray-100 flex items-center justify-between">
           {doc.id ? (
             <button
-              onClick={() => { onClose(); router.push(`/chat?doc_id=${doc.id}&title=${encodeURIComponent(doc.title || "")}`); }}
+              onClick={() => { onClose(); router.push(`/chat?doc_id=${doc.id}&title=${encodeURIComponent(resolvedDoc.title || "")}`); }}
               className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 transition-colors font-medium"
             >
               이 문서에 대해 질의하기
@@ -259,7 +278,7 @@ export default function HomePage() {
           source_type: item.source_type,
           title: item.title,
           category: item.category,
-          summary_text: item.chunk_text,
+          summary_text: item.summary_text,
           summary_date: item.summary_date,
           created_at: "",
         });

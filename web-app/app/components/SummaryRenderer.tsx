@@ -51,17 +51,17 @@ function renderLines(lines: string[]) {
     if (listItems.length === 0) return;
     if (listType === "ol") {
       elements.push(
-        <ol key={elements.length} className="list-decimal list-inside space-y-1.5 text-sm text-gray-700 leading-relaxed">
+        <ol key={elements.length} className="list-decimal list-inside space-y-1.5 text-sm text-gray-700 leading-relaxed break-words">
           {listItems.map((item, i) => <li key={i}>{item}</li>)}
         </ol>
       );
     } else {
       elements.push(
-        <ul key={elements.length} className="space-y-1.5 text-sm text-gray-700 leading-relaxed">
+        <ul key={elements.length} className="space-y-1.5 text-sm text-gray-700 leading-relaxed break-words">
           {listItems.map((item, i) => (
             <li key={i} className="flex gap-2">
               <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-gray-400 shrink-0" />
-              <span>{item}</span>
+              <span className="min-w-0 break-words">{item}</span>
             </li>
           ))}
         </ul>
@@ -90,7 +90,7 @@ function renderLines(lines: string[]) {
     } else {
       flushList();
       elements.push(
-        <p key={elements.length} className="text-sm text-gray-700 leading-relaxed">{trimmed}</p>
+        <p key={elements.length} className="text-sm text-gray-700 leading-relaxed break-words">{trimmed}</p>
       );
     }
   }
@@ -105,7 +105,7 @@ export default function SummaryRenderer({ text }: { text: string | null | undefi
 
   // 섹션 마커가 없는 legacy 텍스트는 그냥 표시
   if (sections.length === 0) {
-    return <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{text}</p>;
+    return <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-words">{text}</p>;
   }
 
   return (

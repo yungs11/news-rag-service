@@ -199,6 +199,7 @@ class Neo4jStore:
                        d.category AS category,
                        d.source_type AS source_type,
                        d.summary_date AS summary_date,
+                       d.summary_text AS summary_text,
                        c.text AS chunk_text,
                        score
                 ORDER BY score DESC
@@ -240,6 +241,7 @@ class Neo4jStore:
                            d.category AS category,
                            d.source_type AS source_type,
                            d.summary_date AS summary_date,
+                           d.summary_text AS summary_text,
                            c.text AS chunk_text,
                            score
                     ORDER BY score DESC

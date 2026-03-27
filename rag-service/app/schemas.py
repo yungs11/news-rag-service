@@ -38,6 +38,7 @@ class SearchItem(BaseModel):
     category: str
     source_type: str
     summary_date: str | None
+    summary_text: str
     chunk_text: str
     score: float
 
