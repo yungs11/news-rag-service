@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
+import { getSessionsByDoc } from "@/lib/chat-history";
 import IngestModal from "./components/IngestModal";
 import SummaryRenderer from "./components/SummaryRenderer";
 
@@ -58,6 +59,14 @@ function SummaryModal({ doc, onClose, isBookmarked, onToggleBookmark }: {
   const [memoText, setMemoText] = useState("");
   const [memoSaved, setMemoSaved] = useState(false);
   const [memoLoading, setMemoLoading] = useState(false);
+  const [relatedSessions, setRelatedSessions] = useState<{ id: string; title: string; message_count: number; updated_at: string }[]>([]);
+  const [showRelated, setShowRelated] = useState(false);
+
+  // Load related chat sessions
+  useEffect(() => {
+    if (!doc.id) return;
+    getSessionsByDoc(doc.id).then(setRelatedSessions).catch(() => {});
+  }, [doc.id]);
 
   // Load existing memo
   useEffect(() => {
@@ -250,6 +259,32 @@ function SummaryModal({ doc, onClose, isBookmarked, onToggleBookmark }: {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                 </svg>
               </button>
+            )}
+            {relatedSessions.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => setShowRelated(!showRelated)}
+                  className="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700 transition-colors font-medium"
+                >
+                  관련 대화 {relatedSessions.length}건
+                  <svg className={`w-3 h-3 transition-transform ${showRelated ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showRelated && (
+                  <div className="absolute bottom-full left-0 mb-1 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[180px] z-10">
+                    {relatedSessions.map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => { onClose(); router.push(`/chat?session=${s.id}`); }}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                      >
+                        {s.title.length > 15 ? s.title.slice(0, 15) + "..." : s.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
           <button

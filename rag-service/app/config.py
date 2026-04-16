@@ -33,6 +33,8 @@ class Settings:
     collector_enabled: bool = True
     collector_cron_hours: str = "9,18"
     collector_user_id: str = "auto-collector"
+    retention_days: int = 7
+    cleanup_enabled: bool = True
 
     @staticmethod
     def from_env() -> "Settings":
@@ -56,4 +58,6 @@ class Settings:
             collector_enabled=os.getenv("COLLECTOR_ENABLED", "true").lower() in ("true", "1", "yes"),
             collector_cron_hours=os.getenv("COLLECTOR_CRON_HOURS", "9,18"),
             collector_user_id=os.getenv("COLLECTOR_USER_ID", "auto-collector"),
+            retention_days=int(os.getenv("RETENTION_DAYS", "7")),
+            cleanup_enabled=os.getenv("CLEANUP_ENABLED", "true").lower() in ("true", "1", "yes"),
         )

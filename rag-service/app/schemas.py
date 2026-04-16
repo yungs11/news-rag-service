@@ -117,7 +117,7 @@ class SummarizeResponse(BaseModel):
 # ── Feed Source (Collector) ──────────────────────────────────────────────────
 
 FilterMode = Literal["all", "ai_only"]
-FeedType = Literal["rss", "reddit_rss", "arxiv", "youtube_channel"]
+FeedType = Literal["rss", "reddit_rss", "arxiv", "youtube_channel", "arca_live"]
 
 
 class FeedSourceCreate(BaseModel):
@@ -128,6 +128,7 @@ class FeedSourceCreate(BaseModel):
     enabled: bool = True
     max_items: int = Field(default=10, ge=1, le=50)
     keywords: str | None = None  # arXiv 검색 키워드 (쉼표 구분)
+    retain: bool = False  # True면 이 소스의 문서는 자동 삭제에서 제외
 
 
 class FeedSourceUpdate(BaseModel):
@@ -138,6 +139,7 @@ class FeedSourceUpdate(BaseModel):
     enabled: bool | None = None
     max_items: int | None = Field(default=None, ge=1, le=50)
     keywords: str | None = None
+    retain: bool | None = None
 
 
 class FeedSourceDetail(BaseModel):
@@ -149,6 +151,7 @@ class FeedSourceDetail(BaseModel):
     enabled: bool
     max_items: int
     keywords: str | None = None
+    retain: bool = False
     last_collected_at: str | None
     last_collected_count: int | None
     created_at: str
@@ -167,6 +170,7 @@ class CollectionResultItem(BaseModel):
     skipped_duplicate: int
     failed: int
     errors: list[str]
+    skipped_no_date: list[dict] = []
 
 
 class CollectionRunResponse(BaseModel):
@@ -177,3 +181,17 @@ class CollectionRunResponse(BaseModel):
 class CollectorStatusResponse(BaseModel):
     last_run: str | None
     results: list[CollectionResultItem]
+
+
+# ── Retention / Cleanup ──────────────────────────────────────────────────────
+
+class RetentionSettings(BaseModel):
+    days: int = Field(default=7, ge=1, le=365)
+    enabled: bool = True
+
+
+class CleanupResultItem(BaseModel):
+    date: str
+    deleted: int
+    protected: int
+    active: int

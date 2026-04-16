@@ -14,10 +14,17 @@ export interface ChatSession {
   message_count: number;
 }
 
+export interface SourceDoc {
+  document_id: string;
+  title: string;
+  source_url: string;
+}
+
 export interface StoredMessage {
   role: "user" | "assistant";
   content: string;
   sources?: string[];
+  source_docs?: SourceDoc[];
 }
 
 function _userIdParam(): string | null {
@@ -65,8 +72,24 @@ export async function appendMessages(sessionId: string, messages: StoredMessage[
   });
 }
 
+export async function getSessionsByDoc(docId: string): Promise<{ id: string; title: string; message_count: number; updated_at: string }[]> {
+  const res = await fetch(`${BASE}/sessions/by-doc/${docId}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.sessions ?? [];
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`${BASE}/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+export async function deleteAllSessions(): Promise<number> {
+  const uid = _userIdParam();
+  const qs = uid ? `?user_id=${encodeURIComponent(uid)}` : "";
+  const res = await fetch(`${BASE}/sessions${qs}`, { method: "DELETE" });
+  if (!res.ok) return 0;
+  const data = await res.json();
+  return data.deleted ?? 0;
 }
 
 export function formatDate(iso: string): string {

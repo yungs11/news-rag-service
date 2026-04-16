@@ -32,6 +32,7 @@ function SourceModal({
   const [filterMode, setFilterMode] = useState<FilterMode>(source?.filter_mode ?? "all");
   const [maxItems, setMaxItems] = useState(source?.max_items ?? 10);
   const [keywords, setKeywords] = useState(source?.keywords ?? "");
+  const [retain, setRetain] = useState(source?.retain ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -118,6 +119,7 @@ function SourceModal({
         filter_mode: filterMode,
         max_items: maxItems,
         keywords: feedType === "arxiv" ? keywords.trim() : ytKeywords,
+        retain,
       };
       if (isEdit) {
         await api.collectorUpdateSource(source.id, payload);
@@ -280,6 +282,25 @@ function SourceModal({
               onChange={(e) => setMaxItems(Math.max(1, Math.min(50, parseInt(e.target.value) || 10)))}
               className="w-24 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+          </div>
+
+          {/* Retain toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600">보존 (삭제 제외)</label>
+              <p className="text-[10px] text-gray-400">자동 클린업에서 이 소스의 문서를 제외합니다</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRetain(!retain)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                retain ? "bg-amber-500" : "bg-gray-200"
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                retain ? "translate-x-4" : "translate-x-0.5"
+              }`} />
+            </button>
           </div>
 
           {/* Test feed button */}
@@ -455,8 +476,13 @@ function SourceCard({
         }`}>
           {source.feed_type === "arxiv" ? "arXiv 논문" : filterLabel}
         </span>
+        {source.retain && (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-100 text-amber-700">
+            보존
+          </span>
+        )}
         <span className="text-xs text-gray-400">
-          {source.feed_type === "arxiv" ? "arXiv" : source.feed_type === "youtube_channel" ? "YouTube" : source.feed_type === "reddit_rss" ? "Reddit" : "RSS"} | 최대 {source.max_items}건
+          {({"arxiv": "arXiv", "youtube_channel": "YouTube", "reddit_rss": "Reddit", "arca_live": "Arca", "rss": "RSS"} as Record<string, string>)[source.feed_type] ?? "RSS"} | 최대 {source.max_items}건
         </span>
       </div>
 
@@ -506,6 +532,11 @@ export default function CollectorPage() {
   const [editSource, setEditSource] = useState<FeedSource | null>(null);
   const [resultItems, setResultItems] = useState<CollectionResultItem[] | null>(null);
   const [lastRun, setLastRun] = useState<string | null>(null);
+  const [retDays, setRetDays] = useState(7);
+  const [retEnabled, setRetEnabled] = useState(true);
+  const [retSaving, setRetSaving] = useState(false);
+  const [cleanupHistory, setCleanupHistory] = useState<{ date: string; deleted: number; protected: number; active: number }[]>([]);
+  const [cleanupRunning, setCleanupRunning] = useState(false);
   const [error, setError] = useState("");
 
   const loadSources = useCallback(async () => {
@@ -533,6 +564,9 @@ export default function CollectorPage() {
     }
     loadSources();
     loadStatus();
+    // Load retention settings
+    api.retentionSettings().then((r) => { setRetDays(r.days); setRetEnabled(r.enabled); }).catch(() => {});
+    api.retentionHistory().then((r) => setCleanupHistory(r.history)).catch(() => {});
   }, [loadSources, loadStatus, router]);
 
   const handleRunAll = async () => {
@@ -601,7 +635,7 @@ export default function CollectorPage() {
         <div>
           <h1 className="text-lg font-bold text-gray-900">뉴스 수집 관리</h1>
           <p className="text-xs text-gray-400 mt-1">
-            3시간마다 자동 수집 (KST) | {enabledCount}개 소스 활성
+            3시간마다 자동 수집 | 매일 03:00 클린업 (KST) | {enabledCount}개 소스 활성
             {lastRun && ` | 마지막 실행: ${toKST(lastRun)}`}
           </p>
         </div>
@@ -642,6 +676,95 @@ export default function CollectorPage() {
           <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">최근 수집 합계</p>
           <p className="text-2xl font-bold text-blue-600">{totalCollected}</p>
         </div>
+      </div>
+
+      {/* Retention Settings */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-bold text-gray-900">데이터 보존 정책</h3>
+          <button
+            type="button"
+            onClick={() => setRetEnabled(!retEnabled)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+              retEnabled ? "bg-blue-600" : "bg-gray-200"
+            }`}
+          >
+            <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              retEnabled ? "translate-x-4" : "translate-x-0.5"
+            }`} />
+          </button>
+        </div>
+        <div className="flex items-center gap-3 mb-4">
+          <p className="text-xs text-gray-500">메모/북마크/대화가 없는 문서를</p>
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={retDays}
+            onChange={(e) => setRetDays(Math.max(1, Math.min(365, parseInt(e.target.value) || 7)))}
+            className="w-16 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-xs text-gray-500">일 후 자동 삭제</p>
+          <button
+            onClick={async () => {
+              setRetSaving(true);
+              try {
+                await api.retentionUpdate(retDays, retEnabled);
+              } catch { /* ignore */ }
+              setRetSaving(false);
+            }}
+            disabled={retSaving}
+            className="text-xs font-medium text-blue-600 hover:text-blue-800 px-3 py-1 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
+          >
+            {retSaving ? "저장 중..." : "저장"}
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm("지금 클린업을 실행합니다. 조건에 해당하는 문서가 삭제됩니다.")) return;
+              setCleanupRunning(true);
+              try {
+                const res = await api.retentionRun();
+                setCleanupHistory((prev) => [...prev, { date: new Date().toISOString(), deleted: res.deleted, protected: res.protected, active: res.active }]);
+                alert(`클린업 완료: ${res.deleted}건 삭제`);
+              } catch { alert("클린업 실패"); }
+              setCleanupRunning(false);
+            }}
+            disabled={cleanupRunning}
+            className="text-xs font-medium text-red-500 hover:text-red-700 px-3 py-1 border border-red-200 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+          >
+            {cleanupRunning ? "실행 중..." : "수동 실행"}
+          </button>
+        </div>
+        {!retEnabled && <p className="text-xs text-gray-400 mb-3">자동 클린업이 비활성화되어 있습니다.</p>}
+
+        {/* Cleanup History */}
+        {cleanupHistory.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-gray-500 mb-2">클린업 이력</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-400 border-b border-gray-100">
+                    <th className="text-left py-1.5 font-medium">날짜</th>
+                    <th className="text-right py-1.5 font-medium">삭제</th>
+                    <th className="text-right py-1.5 font-medium">보존 소스</th>
+                    <th className="text-right py-1.5 font-medium">활성 문서</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...cleanupHistory].reverse().slice(0, 10).map((h, i) => (
+                    <tr key={i} className="border-b border-gray-50">
+                      <td className="py-1.5 text-gray-600">{toKST(h.date)}</td>
+                      <td className="py-1.5 text-right font-semibold text-red-500">{h.deleted}</td>
+                      <td className="py-1.5 text-right text-amber-600">{h.protected}</td>
+                      <td className="py-1.5 text-right text-blue-600">{h.active}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Source cards */}

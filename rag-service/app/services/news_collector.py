@@ -5,8 +5,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+import cloudscraper
 import feedparser
 import httpx
+from bs4 import BeautifulSoup
 
 from app.services.content_extractor import ExtractedContent, extract_content, is_valid_content
 from app.services.summarizer import classify_category, is_failed_summary, summarize_content
@@ -24,18 +26,13 @@ _AI_KEYWORDS = {
     "multimodal", "멀티모달", "vision language", "reasoning",
 }
 
-_REDDIT_USER_AGENT = (
-    "Mozilla/5.0 (compatible; NewsCollectorBot/1.0; "
-    "+https://github.com/yungs11/news-rag-service)"
-)
-
-
 @dataclass
 class FeedEntry:
     title: str
     url: str
     published: str | None = None
     source_label: str | None = None  # 개별 채널/출처 이름 (collected_from에 사용)
+    pre_content: str | None = None  # RSS 본문 (Reddit self-post 등)
 
 
 @dataclass
@@ -48,6 +45,7 @@ class CollectionResult:
     skipped_duplicate: int = 0
     failed: int = 0
     errors: list[str] = field(default_factory=list)
+    skipped_no_date: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +57,7 @@ class CollectionResult:
             "skipped_duplicate": self.skipped_duplicate,
             "failed": self.failed,
             "errors": self.errors,
+            "skipped_no_date": self.skipped_no_date,
         }
 
 
@@ -187,8 +186,64 @@ async def _fetch_youtube_channels(keywords: str | None, feed_url: str, max_items
     return all_entries[:max_items]
 
 
+def _fetch_arca_entries(board_url: str, max_items: int) -> list[FeedEntry]:
+    """arca.live 게시판에서 최신 글 목록 + 본문을 cloudscraper로 가져온다."""
+    scraper = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "linux", "desktop": True},
+    )
+    resp = scraper.get(board_url, timeout=20)
+    resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    entries: list[FeedEntry] = []
+
+    for row in soup.select("a.vrow.column"):
+        # Notice, 광고 제외
+        classes = row.get("class", [])
+        if "notice" in classes:
+            continue
+        href = row.get("href", "")
+        if not href or "subscribe" in href or "notificate" in href:
+            continue
+
+        title_el = row.select_one(".col-title")
+        title = title_el.get_text(strip=True) if title_el else ""
+        if not title:
+            continue
+
+        time_el = row.select_one("time[datetime]")
+        published = time_el["datetime"] if time_el else None
+
+        full_url = f"https://arca.live{href.split('?')[0]}" if href.startswith("/") else href
+
+        # 개별 게시글 본문도 cloudscraper로 가져오기 (Cloudflare 우회)
+        pre_content = None
+        try:
+            article_resp = scraper.get(full_url, timeout=20)
+            if article_resp.status_code == 200:
+                article_soup = BeautifulSoup(article_resp.text, "html.parser")
+                body = article_soup.select_one(".article-body")
+                if body:
+                    pre_content = body.get_text(separator=" ", strip=True)
+        except Exception as exc:
+            logger.warning("Arca article fetch failed: url=%s error=%s", full_url, exc)
+
+        entries.append(FeedEntry(title=title, url=full_url, published=published, pre_content=pre_content))
+
+        if len(entries) >= max_items:
+            break
+
+        time.sleep(1)  # rate limiting
+
+    return entries
+
+
 async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
                               keywords: str | None = None) -> list[FeedEntry]:
+    # arca.live 게시판 (cloudscraper 기반)
+    if feed_type == "arca_live":
+        return await asyncio.to_thread(_fetch_arca_entries, feed_url, max_items)
+
     # YouTube 채널 (yt-dlp 기반)
     if feed_type == "youtube_channel":
         return await _fetch_youtube_channels(keywords, feed_url, max_items)
@@ -199,10 +254,19 @@ async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
             raise ValueError("arXiv source requires keywords")
         feed_url = _build_arxiv_url(keywords, max_items)
 
-    headers = {
-        "User-Agent": _REDDIT_USER_AGENT if feed_type == "reddit_rss" else _BROWSER_UA,
-        "Accept": "application/rss+xml,application/xml,text/xml,*/*",
-    }
+    if feed_type == "reddit_rss":
+        # Reddit은 봇 UA + RSS Accept 헤더 조합을 차단 → 브라우저형 헤더 사용
+        headers = {
+            "User-Agent": _BROWSER_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+    else:
+        headers = {
+            "User-Agent": _BROWSER_UA,
+            "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+        }
 
     timeout = 60.0 if feed_type == "arxiv" else 15.0
     try:
@@ -232,19 +296,29 @@ async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
         if not link or not title:
             continue
 
-        # Reddit: link가 comments 페이지일 수 있음 → 실제 외부 링크 우선
+        # Reddit: RSS content에서 본문 텍스트 추출 (self-post / link-post 공통)
+        # Reddit RSS의 link는 항상 reddit.com 게시물 URL, content에 HTML 본문 포함
+        pre_content = None
         if feed_type == "reddit_rss":
-            actual_url = item.get("url", link)
-            if actual_url.startswith("https://www.reddit.com/r/") and item.get("link"):
-                actual_url = item.get("link", link)
-            link = actual_url
+            raw_html = ""
+            content_list = item.get("content", [])
+            if content_list and isinstance(content_list, list):
+                raw_html = content_list[0].get("value", "")
+            if not raw_html:
+                raw_html = item.get("summary", "")
+            if raw_html:
+                soup = BeautifulSoup(raw_html, "html.parser")
+                pre_content = soup.get_text(separator=" ").strip()
 
         # arXiv: 제목 줄바꿈 정리
         if feed_type == "arxiv":
             title = title.replace("\n", " ").strip()
 
         published = item.get("published", item.get("updated", None))
-        entries.append(FeedEntry(title=title.strip(), url=link.strip(), published=published))
+        entries.append(FeedEntry(
+            title=title.strip(), url=link.strip(), published=published,
+            pre_content=pre_content,
+        ))
 
     return entries
 
@@ -278,7 +352,11 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
         new_entries = []
         for e in entries:
             pub_dt = _parse_published(e.published)
-            if pub_dt is None or pub_dt > last_collected:
+            if pub_dt is None:
+                result.skipped_no_date.append({"title": e.title, "url": e.url})
+                logger.warning("Collector: skipping entry without date: %s", e.title[:60])
+                continue
+            if pub_dt > last_collected:
                 new_entries.append(e)
         entries = new_entries
         skipped_old = before_count - len(entries)
@@ -303,7 +381,17 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
                 continue
 
             # Extract content
-            content = await asyncio.to_thread(extract_content, entry.url, settings.http_timeout_seconds)
+            if entry.pre_content and is_valid_content(entry.pre_content):
+                # RSS 본문이 이미 있는 경우 (Reddit self-post 등)
+                content = ExtractedContent(
+                    url=entry.url,
+                    source_type="blog",
+                    title=entry.title,
+                    content=entry.pre_content,
+                )
+                logger.info("Collector: using pre-extracted RSS content url=%s chars=%d", entry.url, len(entry.pre_content))
+            else:
+                content = await asyncio.to_thread(extract_content, entry.url, settings.http_timeout_seconds)
 
             if not is_valid_content(content.content):
                 result.failed += 1
@@ -440,14 +528,65 @@ DEFAULT_SOURCES = [
         "filter_mode": "ai_only",
         "max_items": 10,
     },
+    {
+        "name": "Reddit AI_Agents",
+        "feed_url": "https://www.reddit.com/r/AI_Agents/.rss",
+        "feed_type": "reddit_rss",
+        "filter_mode": "all",
+        "max_items": 10,
+    },
+    {
+        "name": "Reddit ArtificialInteligence",
+        "feed_url": "https://www.reddit.com/r/ArtificialInteligence/.rss",
+        "feed_type": "reddit_rss",
+        "filter_mode": "ai_only",
+        "max_items": 10,
+    },
+    {
+        "name": "AI타임즈",
+        "feed_url": "https://www.aitimes.com/rss/allArticle.xml",
+        "feed_type": "rss",
+        "filter_mode": "all",
+        "max_items": 10,
+    },
+    {
+        "name": "전자신문 AI",
+        "feed_url": "https://www.etnews.com/rss/Section901.xml",
+        "feed_type": "rss",
+        "filter_mode": "ai_only",
+        "max_items": 10,
+    },
+    {
+        "name": "HuggingFace Blog",
+        "feed_url": "https://huggingface.co/blog/feed.xml",
+        "feed_type": "rss",
+        "filter_mode": "all",
+        "max_items": 10,
+    },
+    {
+        "name": "Simon Willison Blog",
+        "feed_url": "https://simonwillison.net/atom/everything/",
+        "feed_type": "rss",
+        "filter_mode": "ai_only",
+        "max_items": 10,
+    },
+    {
+        "name": "아카라이브 알파카",
+        "feed_url": "https://arca.live/b/alpaca",
+        "feed_type": "arca_live",
+        "filter_mode": "all",
+        "max_items": 15,
+    },
 ]
 
 
 async def seed_default_sources(store) -> None:
-    count = await store.feed_sources_count()
-    if count > 0:
+    existing_urls = await store.get_feed_source_urls()
+    new_sources = [s for s in DEFAULT_SOURCES if s["feed_url"] not in existing_urls]
+    if not new_sources:
+        logger.info("Collector: all default sources already exist, skipping seed")
         return
-    logger.info("Collector: seeding %d default feed sources", len(DEFAULT_SOURCES))
-    for src in DEFAULT_SOURCES:
+    logger.info("Collector: seeding %d new default feed sources", len(new_sources))
+    for src in new_sources:
         await store.create_feed_source(**src)
-    logger.info("Collector: default sources seeded")
+    logger.info("Collector: default sources seeded (%d new)", len(new_sources))

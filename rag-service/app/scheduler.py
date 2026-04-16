@@ -14,6 +14,9 @@ scheduler = AsyncIOScheduler()
 _last_run: str | None = None
 _last_results: list[CollectionResult] = []
 
+# 클린업 이력 (최근 30일분)
+_cleanup_history: list[dict] = []
+
 
 def get_last_status() -> tuple[str | None, list[CollectionResult]]:
     return _last_run, _last_results
@@ -23,6 +26,22 @@ def set_last_status(results: list[CollectionResult]) -> None:
     global _last_run, _last_results
     _last_run = datetime.now().isoformat(timespec="seconds")
     _last_results = results
+
+
+def get_cleanup_history() -> list[dict]:
+    return _cleanup_history
+
+
+def add_cleanup_result(deleted: int, protected: int, active: int) -> None:
+    _cleanup_history.append({
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "deleted": deleted,
+        "protected": protected,
+        "active": active,
+    })
+    # 최근 30건만 유지
+    if len(_cleanup_history) > 30:
+        _cleanup_history.pop(0)
 
 
 def setup_scheduler(cron_hours: str, job_func, **job_kwargs) -> None:
@@ -35,7 +54,28 @@ def setup_scheduler(cron_hours: str, job_func, **job_kwargs) -> None:
         replace_existing=True,
         kwargs=job_kwargs,
     )
-    logger.info("Scheduler configured: cron hours=%s (KST)", hours)
+    logger.info("Scheduler configured: collector cron hours=%s (KST)", hours)
+
+
+def setup_cleanup_job(job_func, start_date: str | None = None, **job_kwargs) -> None:
+    from datetime import datetime as _dt
+    trigger = CronTrigger(hour="3", timezone="Asia/Seoul")
+    # start_date 이전에는 실행하지 않음
+    next_run = None
+    if start_date:
+        next_run = _dt.fromisoformat(start_date)
+    scheduler.add_job(
+        job_func,
+        trigger,
+        id="cleanup",
+        replace_existing=True,
+        kwargs=job_kwargs,
+        next_run_time=next_run,
+    )
+    if start_date:
+        logger.info("Scheduler configured: cleanup at 03:00 KST, starting from %s", start_date)
+    else:
+        logger.info("Scheduler configured: cleanup at 03:00 KST")
 
 
 def start() -> None:

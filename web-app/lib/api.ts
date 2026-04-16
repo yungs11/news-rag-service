@@ -39,7 +39,7 @@ export interface CategoryItem {
 }
 
 export type FilterMode = "all" | "ai_only";
-export type FeedType = "rss" | "reddit_rss" | "arxiv" | "youtube_channel";
+export type FeedType = "rss" | "reddit_rss" | "arxiv" | "youtube_channel" | "arca_live";
 
 export interface FeedSource {
   id: string;
@@ -50,6 +50,7 @@ export interface FeedSource {
   enabled: boolean;
   max_items: number;
   keywords: string | null;
+  retain: boolean;
   last_collected_at: string | null;
   last_collected_count: number | null;
   created_at: string;
@@ -284,4 +285,17 @@ export const api = {
 
   collectorTestFeed: (params: { feed_type: string; feed_url?: string; keywords?: string; max_items?: number }) =>
     post<{ ok: boolean; count: number; entries: { title: string; url: string }[]; error?: string }>("/collector/test-feed", params),
+
+  // ── Retention ──
+  retentionSettings: () =>
+    get<{ days: number; enabled: boolean }>("/retention/settings"),
+
+  retentionUpdate: (days: number, enabled: boolean) =>
+    put<{ ok: boolean; days: number; enabled: boolean }>("/retention/settings", { days, enabled }),
+
+  retentionHistory: () =>
+    get<{ history: { date: string; deleted: number; protected: number; active: number }[] }>("/retention/history"),
+
+  retentionRun: () =>
+    post<{ ok: boolean; deleted: number; protected: number; active: number }>("/retention/run", {}),
 };

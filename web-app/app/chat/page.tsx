@@ -11,6 +11,7 @@ import {
   getSessionWithMessages,
   appendMessages,
   deleteSession,
+  deleteAllSessions,
   formatDate,
 } from "@/lib/chat-history";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -81,6 +82,7 @@ function ChatPageInner() {
   const searchParams = useSearchParams();
   const docId = searchParams.get("doc_id") ?? undefined;
   const docTitle = searchParams.get("title") ?? undefined;
+  const sessionParam = searchParams.get("session") ?? undefined;
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -114,6 +116,13 @@ function ChatPageInner() {
     setShowSidebar(false);
   }, []);
 
+  // Auto-select session if ?session= param is provided
+  useEffect(() => {
+    if (sessionParam && sessions.length > 0) {
+      selectSession(sessionParam);
+    }
+  }, [sessionParam, sessions.length, selectSession]);
+
   const newChat = useCallback(() => {
     setCurrentSessionId(null);
     setMessages([]);
@@ -131,6 +140,13 @@ function ChatPageInner() {
     },
     [currentSessionId, newChat]
   );
+
+  const handleDeleteAll = useCallback(async () => {
+    if (!confirm("모든 대화를 삭제합니다. 이 작업은 되돌릴 수 없습니다.")) return;
+    await deleteAllSessions();
+    newChat();
+    setSessions([]);
+  }, [newChat]);
 
   const send = async (query?: string) => {
     const q = (query ?? input).trim();
@@ -158,10 +174,14 @@ function ChatPageInner() {
         ? await api.askWithFile(q, attachedFile, 6, category, docId, historyParam)
         : await api.ask(q, 6, category, docId, historyParam);
       setAttachedFile(null);
+      const uniqueDocs = result.hits
+        ? Array.from(new Map(result.hits.map(h => [h.document_id, { document_id: h.document_id, title: h.title, source_url: h.source_url }])).values())
+        : [];
       const aiMsg: Message = {
         role: "assistant",
         content: result.answer,
         sources: result.sources,
+        source_docs: uniqueDocs,
       };
       const finalMessages = [...nextMessages, aiMsg];
       setMessages(finalMessages);
@@ -238,7 +258,14 @@ function ChatPageInner() {
           <div className="relative w-72 bg-white h-full flex flex-col shadow-xl">
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
               <span className="text-sm font-bold text-gray-900">대화 내역</span>
-              <button onClick={() => setShowSidebar(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+              <div className="flex items-center gap-3">
+                {sessions.length > 0 && (
+                  <button onClick={handleDeleteAll} className="text-[10px] text-gray-300 hover:text-red-400 transition-colors">
+                    전체 삭제
+                  </button>
+                )}
+                <button onClick={() => setShowSidebar(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+              </div>
             </div>
             <button
               onClick={newChat}
@@ -304,7 +331,17 @@ function ChatPageInner() {
           </div>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-3 flex-1 overflow-hidden flex flex-col">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">대화 내역</p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">대화 내역</p>
+            {sessions.length > 0 && (
+              <button
+                onClick={handleDeleteAll}
+                className="text-[10px] text-gray-300 hover:text-red-400 transition-colors"
+              >
+                전�� 삭제
+              </button>
+            )}
+          </div>
           {sessions.length === 0 ? (
             <p className="text-xs text-gray-300 text-center mt-4">저장된 대화가 없습니다.</p>
           ) : (
@@ -396,20 +433,30 @@ function ChatPageInner() {
                     </ReactMarkdown>
                   </div>
                 )}
-                {msg.sources && msg.sources.length > 0 && (
+                {((msg.source_docs && msg.source_docs.length > 0) || (msg.sources && msg.sources.length > 0)) && (
                   <div className="mt-3 pt-3 border-t border-gray-200">
                     <p className="text-xs font-semibold text-gray-400 mb-1.5">참고 문서</p>
-                    {msg.sources.map((url) => (
-                      <a
-                        key={url}
-                        href={url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block text-xs text-blue-500 hover:underline truncate"
-                      >
-                        {url}
-                      </a>
-                    ))}
+                    {msg.source_docs && msg.source_docs.length > 0
+                      ? msg.source_docs.map((doc) => (
+                          <a
+                            key={doc.document_id}
+                            href={`/?doc=${doc.document_id}`}
+                            className="block text-xs text-blue-600 hover:text-blue-800 hover:underline truncate py-0.5"
+                          >
+                            📄 {doc.title}
+                          </a>
+                        ))
+                      : msg.sources?.map((url) => (
+                          <a
+                            key={url}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block text-xs text-blue-500 hover:underline truncate"
+                          >
+                            {url}
+                          </a>
+                        ))}
                   </div>
                 )}
               </div>

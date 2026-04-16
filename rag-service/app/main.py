@@ -51,10 +51,12 @@ from app import scheduler as sched
 from app.services.chat_store import (
     append_messages,
     create_session,
+    delete_all_sessions,
     delete_session,
     get_session_with_messages,
     init_db,
     list_sessions,
+    list_sessions_by_doc,
 )
 from app.services.embedder import Embedder
 from app.services.neo4j_store import Neo4jStore
@@ -76,6 +78,23 @@ async def _scheduled_collection():
     sched.set_last_status(results)
 
 
+async def _scheduled_cleanup():
+    """Cron job: delete expired unused documents."""
+    from app.services.chat_store import get_doc_ids_with_sessions
+    logger.info("Scheduled cleanup triggered")
+    ret = await store.get_retention_settings()
+    if not ret or not ret.get("enabled"):
+        logger.info("Cleanup skipped: disabled")
+        return
+    days = ret["days"]
+    protected = await store.get_protected_source_names()
+    active_ids = await get_doc_ids_with_sessions()
+    expired_ids = await store.find_expired_documents(days, protected, active_ids)
+    deleted = await store.bulk_delete_documents(expired_ids)
+    sched.add_cleanup_result(deleted=deleted, protected=len(protected), active=len(active_ids))
+    logger.info("Cleanup done: deleted=%d protected_sources=%d active_docs=%d", deleted, len(protected), len(active_ids))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Connecting to Neo4j...")
@@ -87,10 +106,16 @@ async def lifespan(app: FastAPI):
     # Seed default feed sources if empty
     await seed_default_sources(store)
 
+    # Initialize retention config if not exists
+    ret = await store.get_retention_settings()
+    if not ret:
+        await store.upsert_retention_settings(settings.retention_days, settings.cleanup_enabled)
+
     # Start scheduler
     if settings.collector_enabled:
         sched.setup_scheduler(settings.collector_cron_hours, _scheduled_collection)
-        sched.start()
+    sched.setup_cleanup_job(_scheduled_cleanup, start_date="2026-04-23T03:00:00")
+    sched.start()
 
     yield
 
@@ -449,12 +474,25 @@ async def chat_append_messages(session_id: str, req: AppendMessagesRequest):
     return {"ok": True}
 
 
+@app.get("/chat/sessions/by-doc/{doc_id}")
+async def chat_sessions_by_doc(doc_id: str):
+    sessions = await list_sessions_by_doc(doc_id)
+    return {"sessions": sessions}
+
+
 @app.delete("/chat/sessions/{session_id}")
 async def chat_delete_session(session_id: str):
     deleted = await delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
+
+
+@app.delete("/chat/sessions")
+async def chat_delete_all_sessions(user_id: str | None = None):
+    count = await delete_all_sessions(user_id)
+    logger.info("All chat sessions deleted: user_id=%s count=%d", user_id, count)
+    return {"ok": True, "deleted": count}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -801,3 +839,35 @@ async def collector_test_feed(req: TestFeedRequest):
         }
     except Exception as exc:
         return {"ok": False, "count": 0, "entries": [], "error": f"{exc.__class__.__name__}: {exc}"}
+
+
+# ── Retention / Cleanup ──────────────────────────────────────────────────────
+
+@app.get("/retention/settings")
+async def get_retention_settings():
+    ret = await store.get_retention_settings()
+    if not ret:
+        return {"days": settings.retention_days, "enabled": settings.cleanup_enabled}
+    return ret
+
+
+@app.put("/retention/settings")
+async def update_retention_settings(body: dict):
+    days = body.get("days", 7)
+    enabled = body.get("enabled", True)
+    await store.upsert_retention_settings(days, enabled)
+    logger.info("Retention settings updated: days=%d enabled=%s", days, enabled)
+    return {"ok": True, "days": days, "enabled": enabled}
+
+
+@app.get("/retention/history")
+async def get_cleanup_history():
+    return {"history": sched.get_cleanup_history()}
+
+
+@app.post("/retention/run")
+async def run_cleanup():
+    await _scheduled_cleanup()
+    history = sched.get_cleanup_history()
+    latest = history[-1] if history else {"deleted": 0, "protected": 0, "active": 0}
+    return {"ok": True, **latest}

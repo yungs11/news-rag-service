@@ -586,6 +586,7 @@ class Neo4jStore:
                        fs.enabled AS enabled, fs.max_items AS max_items,
                        toString(fs.last_collected_at) AS last_collected_at,
                        fs.keywords AS keywords,
+                       coalesce(fs.retain, false) AS retain,
                        fs.last_collected_count AS last_collected_count,
                        toString(fs.created_at) AS created_at
                 ORDER BY fs.created_at DESC
@@ -603,6 +604,7 @@ class Neo4jStore:
                        fs.enabled AS enabled, fs.max_items AS max_items,
                        toString(fs.last_collected_at) AS last_collected_at,
                        fs.keywords AS keywords,
+                       coalesce(fs.retain, false) AS retain,
                        fs.last_collected_count AS last_collected_count,
                        toString(fs.created_at) AS created_at
                 """,
@@ -652,7 +654,7 @@ class Neo4jStore:
         return source_id
 
     async def update_feed_source(self, source_id: str, **kwargs: Any) -> bool:
-        allowed = {"name", "feed_url", "feed_type", "filter_mode", "enabled", "max_items", "keywords"}
+        allowed = {"name", "feed_url", "feed_type", "filter_mode", "enabled", "max_items", "keywords", "retain"}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             return False
@@ -705,3 +707,82 @@ class Neo4jStore:
             result = await s.run("MATCH (fs:FeedSource) RETURN count(fs) AS cnt")
             record = await result.single()
             return int(record["cnt"]) if record else 0
+
+    async def get_feed_source_urls(self) -> set[str]:
+        """기존 FeedSource 노드의 feed_url 집합을 반환한다."""
+        async with self._driver.session() as s:
+            result = await s.run("MATCH (fs:FeedSource) RETURN fs.feed_url AS feed_url")
+            records = await result.data()
+            return {str(r["feed_url"]) for r in records if r.get("feed_url")}
+
+    # ─── Retention / Cleanup ─────────────────────────────────────────────────
+
+    async def get_retention_settings(self) -> dict:
+        async with self._driver.session() as s:
+            result = await s.run(
+                "MATCH (rc:RetentionConfig {id: 'default'}) RETURN rc.days AS days, rc.enabled AS enabled"
+            )
+            record = await result.single()
+            if record:
+                return {"days": int(record["days"]), "enabled": bool(record["enabled"])}
+            return None  # type: ignore[return-value]
+
+    async def upsert_retention_settings(self, days: int, enabled: bool) -> None:
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                MERGE (rc:RetentionConfig {id: 'default'})
+                SET rc.days = $days, rc.enabled = $enabled, rc.updated_at = datetime()
+                """,
+                days=days, enabled=enabled,
+            )
+
+    async def get_protected_source_names(self) -> list[str]:
+        """retain=true인 FeedSource의 name 목록을 반환한다."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                "MATCH (fs:FeedSource) WHERE fs.retain = true RETURN fs.name AS name"
+            )
+            records = await result.data()
+            return [r["name"] for r in records]
+
+    async def find_expired_documents(self, days: int, protected_sources: list[str],
+                                      active_doc_ids: set[str]) -> list[str]:
+        """보존 조건을 충족하지 않는 만료 문서 ID 목록."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (d:Document)
+                WHERE d.created_at < datetime() - duration({days: $days})
+                  AND NOT (d)<-[:HAS_MEMO]-()
+                  AND NOT (d)<-[:HAS_BOOKMARKED]-()
+                RETURN d.id AS id, d.collected_from AS collected_from
+                """,
+                days=days,
+            )
+            records = await result.data()
+            # Python에서 protected_sources 및 active_doc_ids 필터링
+            return [
+                r["id"] for r in records
+                if r["id"] not in active_doc_ids
+                and (r.get("collected_from") or "") not in protected_sources
+            ]
+
+    async def bulk_delete_documents(self, doc_ids: list[str]) -> int:
+        """문서 + Chunk 일괄 삭제. 삭제 건수 반환."""
+        if not doc_ids:
+            return 0
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (d:Document) WHERE d.id IN $ids
+                OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+                WITH d, collect(c) AS chunks
+                DETACH DELETE d
+                FOREACH (c IN chunks | DELETE c)
+                RETURN count(d) AS deleted
+                """,
+                ids=doc_ids,
+            )
+            record = await result.single()
+            return int(record["deleted"]) if record else 0
