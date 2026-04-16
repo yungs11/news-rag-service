@@ -442,6 +442,138 @@ class Neo4jStore:
             records = await result.data()
             return [str(r["id"]) for r in records]
 
+    # ─── Bookmark ──────────────────────────────────────────────────────────
+
+    async def toggle_bookmark(self, user_id: str, document_id: str) -> bool:
+        """Toggle bookmark. Returns True if bookmarked, False if removed."""
+        async with self._driver.session() as s:
+            # Check if already bookmarked
+            check = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[rel:HAS_BOOKMARKED]->(d:Document {id: $doc_id})
+                RETURN count(rel) AS cnt
+                """,
+                user_id=user_id,
+                doc_id=document_id,
+            )
+            record = await check.single()
+            already = bool(record and record["cnt"] > 0)
+
+            if already:
+                await s.run(
+                    """
+                    MATCH (r:Reader {user_id: $user_id})-[rel:HAS_BOOKMARKED]->(d:Document {id: $doc_id})
+                    DELETE rel
+                    """,
+                    user_id=user_id,
+                    doc_id=document_id,
+                )
+                return False
+            else:
+                await s.run(
+                    """
+                    MATCH (d:Document {id: $doc_id})
+                    MERGE (r:Reader {user_id: $user_id})
+                    MERGE (r)-[:HAS_BOOKMARKED]->(d)
+                    """,
+                    user_id=user_id,
+                    doc_id=document_id,
+                )
+                return True
+
+    async def get_bookmarked_doc_ids(self, user_id: str) -> list[str]:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[:HAS_BOOKMARKED]->(d:Document)
+                RETURN d.id AS id
+                """,
+                user_id=user_id,
+            )
+            records = await result.data()
+            return [str(r["id"]) for r in records]
+
+    async def get_bookmarked_documents(self, user_id: str) -> list[dict[str, Any]]:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[:HAS_BOOKMARKED]->(d:Document)
+                RETURN d.id AS id, d.source_url AS source_url,
+                       d.source_type AS source_type, d.title AS title,
+                       d.category AS category, d.summary_text AS summary_text,
+                       d.summary_date AS summary_date,
+                       d.user_id AS user_id,
+                       d.collected_from AS collected_from,
+                       toString(d.created_at) AS created_at
+                ORDER BY d.created_at DESC
+                """,
+                user_id=user_id,
+            )
+            return await result.data()
+
+    # ─── Memo ─────────────────────────────────────────────────────────────
+
+    async def upsert_memo(self, user_id: str, document_id: str, text: str) -> None:
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                MATCH (d:Document {id: $doc_id})
+                MERGE (r:Reader {user_id: $user_id})
+                MERGE (r)-[m:HAS_MEMO]->(d)
+                SET m.text = $text,
+                    m.updated_at = datetime(),
+                    m.created_at = coalesce(m.created_at, datetime())
+                """,
+                user_id=user_id,
+                doc_id=document_id,
+                text=text,
+            )
+
+    async def delete_memo(self, user_id: str, document_id: str) -> bool:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[m:HAS_MEMO]->(d:Document {id: $doc_id})
+                DELETE m
+                RETURN count(m) AS deleted
+                """,
+                user_id=user_id,
+                doc_id=document_id,
+            )
+            record = await result.single()
+            return bool(record and record["deleted"] > 0)
+
+    async def get_memos(self, user_id: str) -> list[dict[str, Any]]:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[m:HAS_MEMO]->(d:Document)
+                RETURN d.id AS document_id, d.title AS title,
+                       d.category AS category, d.source_url AS source_url,
+                       d.source_type AS source_type, d.summary_date AS summary_date,
+                       d.collected_from AS collected_from,
+                       m.text AS memo_text,
+                       toString(m.created_at) AS memo_created_at,
+                       toString(m.updated_at) AS memo_updated_at
+                ORDER BY m.updated_at DESC
+                """,
+                user_id=user_id,
+            )
+            return await result.data()
+
+    async def get_memo(self, user_id: str, document_id: str) -> str | None:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[m:HAS_MEMO]->(d:Document {id: $doc_id})
+                RETURN m.text AS text
+                """,
+                user_id=user_id,
+                doc_id=document_id,
+            )
+            record = await result.single()
+            return str(record["text"]) if record else None
+
     # ─── FeedSource CRUD ──────────────────────────────────────────────────────
 
     async def list_feed_sources(self) -> list[dict[str, Any]]:

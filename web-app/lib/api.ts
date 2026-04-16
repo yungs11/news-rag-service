@@ -200,6 +200,29 @@ export const api = {
   getReadIds: (userId: string) =>
     get<{ ids: string[] }>(`/documents/read-ids?user_id=${encodeURIComponent(userId)}`),
 
+  // ── Bookmark ──
+  toggleBookmark: (documentId: string, userId: string) =>
+    post<{ ok: boolean; bookmarked: boolean }>("/documents/bookmark", { document_id: documentId, user_id: userId }),
+
+  getBookmarkIds: (userId: string) =>
+    get<{ ids: string[] }>(`/documents/bookmark-ids?user_id=${encodeURIComponent(userId)}`),
+
+  getBookmarks: (userId: string) =>
+    get<{ items: DocumentDetail[] }>(`/documents/bookmarks?user_id=${encodeURIComponent(userId)}`),
+
+  // ── Memo ──
+  upsertMemo: (documentId: string, userId: string, text: string) =>
+    post<{ ok: boolean }>("/documents/memo", { document_id: documentId, user_id: userId, text }),
+
+  deleteMemo: (documentId: string, userId: string) =>
+    del<{ ok: boolean }>(`/documents/memo?document_id=${encodeURIComponent(documentId)}&user_id=${encodeURIComponent(userId)}`),
+
+  getMemos: (userId: string) =>
+    get<{ items: { document_id: string; title: string; category: string; source_url: string; source_type: string; summary_date: string | null; collected_from: string | null; memo_text: string; memo_created_at: string; memo_updated_at: string }[] }>(`/documents/memos?user_id=${encodeURIComponent(userId)}`),
+
+  getMemo: (documentId: string, userId: string) =>
+    get<{ text: string | null }>(`/documents/memo?document_id=${encodeURIComponent(documentId)}&user_id=${encodeURIComponent(userId)}`),
+
   deleteDocument: async (id: string) => {
     const res = await fetch(`${BASE}/documents/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

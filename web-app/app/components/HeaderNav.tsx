@@ -55,6 +55,13 @@ const IconCollector = () => (
   </svg>
 );
 
+// 라이브러리 — 별 아이콘
+const IconPrivate = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+  </svg>
+);
+
 // 로그아웃
 const IconLogout = () => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
@@ -112,6 +119,10 @@ export default function HeaderNav() {
             <IconChat />
             <span className="text-sm">챗봇</span>
           </Link>
+          <Link href="/private" className={navLinkClass}>
+            <IconPrivate />
+            <span className="text-sm">라이브러리</span>
+          </Link>
           {admin && (
             <Link href="/collector" className={navLinkClass}>
               <IconCollector />
@@ -133,6 +144,7 @@ export default function HeaderNav() {
         <div className="flex sm:hidden items-center gap-0.5">
           <Link href="/" className={navLinkClass} title="문서"><IconDoc /></Link>
           <Link href="/chat" className={navLinkClass} title="챗봇"><IconChat /></Link>
+          <Link href="/private" className={navLinkClass} title="라이브러리"><IconPrivate /></Link>
           {admin && <Link href="/collector" className={navLinkClass} title="수집"><IconCollector /></Link>}
           {admin && <Link href="/graph" className={navLinkClass} title="그래프DB"><IconGraph /></Link>}
         </div>

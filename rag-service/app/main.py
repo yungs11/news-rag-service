@@ -319,6 +319,93 @@ async def get_read_ids(user_id: str | None = None):
     return {"ids": ids}
 
 
+# ── Bookmark ──────────────────────────────────────────────────────────────────
+
+
+class BookmarkRequest(BaseModel):
+    document_id: str
+    user_id: str
+
+
+@app.post("/documents/bookmark")
+async def toggle_bookmark(req: BookmarkRequest):
+    bookmarked = await store.toggle_bookmark(req.user_id, req.document_id)
+    return {"ok": True, "bookmarked": bookmarked}
+
+
+@app.get("/documents/bookmark-ids")
+async def get_bookmark_ids(user_id: str | None = None):
+    if not user_id:
+        return {"ids": []}
+    ids = await store.get_bookmarked_doc_ids(user_id)
+    return {"ids": ids}
+
+
+@app.get("/documents/bookmarks")
+async def get_bookmarks(user_id: str | None = None):
+    if not user_id:
+        return {"items": []}
+    rows = await store.get_bookmarked_documents(user_id)
+    items = [
+        DocumentDetail(
+            id=str(r.get("id", "")),
+            source_url=str(r.get("source_url", "")),
+            source_type=str(r.get("source_type", "")),
+            title=str(r.get("title", "")),
+            category=str(r.get("category", "")),
+            summary_text=str(r.get("summary_text", "")),
+            summary_date=str(r["summary_date"]) if r.get("summary_date") else None,
+            ingest_type=_ingest_type(r),
+            collected_from=str(r["collected_from"]) if r.get("collected_from") else None,
+            created_at=str(r.get("created_at", "")),
+        )
+        for r in rows
+    ]
+    return {"items": items}
+
+
+# ── Memo ──────────────────────────────────────────────────────────────────────
+
+
+class MemoUpsertRequest(BaseModel):
+    document_id: str
+    user_id: str
+    text: str
+
+
+class MemoDeleteRequest(BaseModel):
+    document_id: str
+    user_id: str
+
+
+@app.post("/documents/memo")
+async def upsert_memo(req: MemoUpsertRequest):
+    await store.upsert_memo(req.user_id, req.document_id, req.text)
+    return {"ok": True}
+
+
+@app.delete("/documents/memo")
+async def delete_memo(document_id: str, user_id: str):
+    deleted = await store.delete_memo(user_id, document_id)
+    return {"ok": True, "deleted": deleted}
+
+
+@app.get("/documents/memos")
+async def get_memos(user_id: str | None = None):
+    if not user_id:
+        return {"items": []}
+    items = await store.get_memos(user_id)
+    return {"items": items}
+
+
+@app.get("/documents/memo")
+async def get_memo(document_id: str, user_id: str | None = None):
+    if not user_id:
+        return {"text": None}
+    text = await store.get_memo(user_id, document_id)
+    return {"text": text}
+
+
 # ── Chat History ──────────────────────────────────────────────────────────────
 
 class CreateSessionRequest(BaseModel):

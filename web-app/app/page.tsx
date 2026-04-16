@@ -45,11 +45,28 @@ function StatCard({ label, value }: { label: string; value: number | string }) {
 }
 
 /* ── Summary Modal ── */
-function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => void }) {
+function SummaryModal({ doc, onClose, isBookmarked, onToggleBookmark }: {
+  doc: DocumentDetail;
+  onClose: () => void;
+  isBookmarked: boolean;
+  onToggleBookmark: () => void;
+}) {
   const router = useRouter();
   const [tab, setTab] = useState<"summary" | "raw">("summary");
   const [fullDoc, setFullDoc] = useState<DocumentDetail | null>(null);
   const [loadingDoc, setLoadingDoc] = useState(false);
+  const [memoText, setMemoText] = useState("");
+  const [memoSaved, setMemoSaved] = useState(false);
+  const [memoLoading, setMemoLoading] = useState(false);
+
+  // Load existing memo
+  useEffect(() => {
+    const uid = getUserId();
+    if (!uid || !doc.id) return;
+    api.getMemo(doc.id, uid).then((res) => {
+      if (res.text) { setMemoText(res.text); setMemoSaved(true); }
+    }).catch(() => {});
+  }, [doc.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -164,19 +181,77 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
           )}
         </div>
 
+        {/* Memo */}
+        <div className="px-5 pb-3 border-t border-gray-100 pt-3">
+          <div className="flex items-center gap-2">
+            <input
+              value={memoText}
+              onChange={(e) => { setMemoText(e.target.value); setMemoSaved(false); }}
+              placeholder="메모를 남겨보세요..."
+              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={async () => {
+                const uid = getUserId();
+                if (!uid || !doc.id || !memoText.trim()) return;
+                setMemoLoading(true);
+                try {
+                  await api.upsertMemo(doc.id, uid, memoText.trim());
+                  setMemoSaved(true);
+                } catch { /* ignore */ }
+                setMemoLoading(false);
+              }}
+              disabled={memoLoading || !memoText.trim()}
+              className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-300 px-2 py-2 transition-colors"
+            >
+              {memoSaved ? "저장됨" : "저장"}
+            </button>
+            {memoSaved && (
+              <button
+                onClick={async () => {
+                  const uid = getUserId();
+                  if (!uid || !doc.id) return;
+                  await api.deleteMemo(doc.id, uid).catch(() => {});
+                  setMemoText("");
+                  setMemoSaved(false);
+                }}
+                className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+                title="메모 삭제"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Footer */}
         <div className="p-4 border-t border-gray-100 flex items-center justify-between">
-          {doc.id ? (
-            <button
-              onClick={() => { onClose(); router.push(`/chat?doc_id=${doc.id}&title=${encodeURIComponent(resolvedDoc.title || "")}`); }}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 transition-colors font-medium"
-            >
-              이 문서에 대해 질의하기
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          ) : <span />}
+          <div className="flex items-center gap-3">
+            {doc.id && (
+              <button
+                onClick={onToggleBookmark}
+                className={`flex items-center gap-1 text-xs font-medium transition-colors ${
+                  isBookmarked ? "text-yellow-500" : "text-gray-400 hover:text-yellow-400"
+                }`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={isBookmarked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                </svg>
+                {isBookmarked ? "북마크됨" : "북마크"}
+              </button>
+            )}
+            {doc.id && (
+              <button
+                onClick={() => { onClose(); router.push(`/chat?doc_id=${doc.id}&title=${encodeURIComponent(resolvedDoc.title || "")}`); }}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 transition-colors font-medium"
+              >
+                질의하기
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg transition-colors"
@@ -253,7 +328,23 @@ export default function HomePage() {
   const [shareDoc, setShareDoc] = useState<DocumentDetail | null>(null);
   const [showIngest, setShowIngest] = useState(false);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
+  const [bookmarkIds, setBookmarkIds] = useState<Set<string>>(new Set());
   const [mounted, setMounted] = useState(false);
+
+  const handleToggleBookmark = async (e: React.MouseEvent, docId: string) => {
+    e.stopPropagation();
+    const uid = getUserId();
+    if (!uid || !docId) return;
+    try {
+      const res = await api.toggleBookmark(docId, uid);
+      setBookmarkIds((prev) => {
+        const next = new Set(prev);
+        if (res.bookmarked) next.add(docId);
+        else next.delete(docId);
+        return next;
+      });
+    } catch { /* ignore */ }
+  };
 
   const handleOpenDoc = (doc: DocumentDetail) => {
     setSelectedDoc(doc);
@@ -272,11 +363,13 @@ export default function HomePage() {
       api.recentDocuments(50).catch(() => null),
       api.categories().catch(() => null),
       uid ? api.getReadIds(uid).catch(() => null) : Promise.resolve(null),
-    ]).then(([docRes, catRes, readRes]) => {
+      uid ? api.getBookmarkIds(uid).catch(() => null) : Promise.resolve(null),
+    ]).then(([docRes, catRes, readRes, bmRes]) => {
       if (!docRes && !catRes) setApiError(true);
       if (docRes) setDocs(docRes.items);
       if (catRes) setCategories(catRes.items);
       if (readRes) setReadIds(new Set(readRes.ids));
+      if (bmRes) setBookmarkIds(new Set(bmRes.ids));
     });
   }, []);
 
@@ -451,6 +544,18 @@ export default function HomePage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {/* Bookmark star */}
+                  {mounted && doc.id && (
+                    <button
+                      onClick={(e) => handleToggleBookmark(e, doc.id)}
+                      className={`transition-colors ${bookmarkIds.has(doc.id) ? "text-yellow-400 hover:text-yellow-500" : "text-gray-200 hover:text-yellow-300"}`}
+                      title={bookmarkIds.has(doc.id) ? "북마크 해제" : "북마크"}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={bookmarkIds.has(doc.id) ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                      </svg>
+                    </button>
+                  )}
                   <span className="text-xs text-gray-400">
                     {SOURCE_ICONS[doc.source_type] ?? "🔗"}
                   </span>
@@ -538,7 +643,24 @@ export default function HomePage() {
 
       {/* Summary Modal */}
       {selectedDoc && (
-        <SummaryModal doc={selectedDoc} onClose={() => setSelectedDoc(null)} />
+        <SummaryModal
+          doc={selectedDoc}
+          onClose={() => setSelectedDoc(null)}
+          isBookmarked={bookmarkIds.has(selectedDoc.id)}
+          onToggleBookmark={async () => {
+            const uid = getUserId();
+            if (!uid || !selectedDoc.id) return;
+            try {
+              const res = await api.toggleBookmark(selectedDoc.id, uid);
+              setBookmarkIds((prev) => {
+                const next = new Set(prev);
+                if (res.bookmarked) next.add(selectedDoc.id);
+                else next.delete(selectedDoc.id);
+                return next;
+              });
+            } catch { /* ignore */ }
+          }}
+        />
       )}
 
       {/* Share Modal */}
