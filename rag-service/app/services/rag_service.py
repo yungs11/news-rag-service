@@ -40,6 +40,12 @@ class RagService:
         self.settings = settings
         self.store = store
         self.embedder = embedder
+        self._rag_model_override: str | None = None
+
+    async def refresh_model(self) -> None:
+        """Neo4j에서 최신 모델 설정을 로드한다."""
+        mc = await self.store.get_model_config()
+        self._rag_model_override = mc["rag_model"] if mc else None
 
     async def ingest(
         self,
@@ -144,7 +150,7 @@ class RagService:
             messages.extend(history[-6:])
         messages.append({"role": "user", "content": user_prompt})
         payload = {
-            "model": self.settings.openrouter_rag_model,
+            "model": self._rag_model_override or self.settings.openrouter_rag_model,
             "messages": messages,
             "temperature": 0.2,
         }

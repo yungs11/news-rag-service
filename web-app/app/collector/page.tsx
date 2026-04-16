@@ -537,6 +537,9 @@ export default function CollectorPage() {
   const [retSaving, setRetSaving] = useState(false);
   const [cleanupHistory, setCleanupHistory] = useState<{ date: string; deleted: number; protected: number; active: number }[]>([]);
   const [cleanupRunning, setCleanupRunning] = useState(false);
+  const [summaryModel, setSummaryModel] = useState("");
+  const [ragModel, setRagModel] = useState("");
+  const [modelSaving, setModelSaving] = useState(false);
   const [error, setError] = useState("");
 
   const loadSources = useCallback(async () => {
@@ -564,6 +567,8 @@ export default function CollectorPage() {
     }
     loadSources();
     loadStatus();
+    // Load model settings
+    api.modelSettings().then((m) => { setSummaryModel(m.summary_model); setRagModel(m.rag_model); }).catch(() => {});
     // Load retention settings
     api.retentionSettings().then((r) => { setRetDays(r.days); setRetEnabled(r.enabled); }).catch(() => {});
     api.retentionHistory().then((r) => setCleanupHistory(r.history)).catch(() => {});
@@ -675,6 +680,46 @@ export default function CollectorPage() {
         <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
           <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">최근 수집 합계</p>
           <p className="text-2xl font-bold text-blue-600">{totalCollected}</p>
+        </div>
+      </div>
+
+      {/* Model Settings */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+        <h3 className="text-sm font-bold text-gray-900 mb-4">LLM 모델 설정</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1">요약 모델 (수집/URL 요약)</label>
+            <input
+              value={summaryModel}
+              onChange={(e) => setSummaryModel(e.target.value)}
+              placeholder="google/gemma-4-31b-it:free"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1">RAG 대화 모델</label>
+            <input
+              value={ragModel}
+              onChange={(e) => setRagModel(e.target.value)}
+              placeholder="anthropic/claude-opus-4.6"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <button
+            onClick={async () => {
+              if (!summaryModel.trim() || !ragModel.trim()) return;
+              setModelSaving(true);
+              try {
+                await api.modelUpdate(summaryModel.trim(), ragModel.trim());
+              } catch { /* ignore */ }
+              setModelSaving(false);
+            }}
+            disabled={modelSaving}
+            className="text-xs font-medium text-blue-600 hover:text-blue-800 px-4 py-2 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
+          >
+            {modelSaving ? "저장 중..." : "모델 저장"}
+          </button>
+          <p className="text-[10px] text-gray-400">저장 즉시 적용됩니다. 서버 재시작 불필요.</p>
         </div>
       </div>
 

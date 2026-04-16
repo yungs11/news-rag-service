@@ -323,7 +323,7 @@ async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
     return entries
 
 
-async def collect_source(source: dict, settings, rag) -> CollectionResult:
+async def collect_source(source: dict, settings, rag, summary_model: str | None = None) -> CollectionResult:
     result = CollectionResult(
         source_name=source["name"],
         source_id=source["id"],
@@ -404,7 +404,7 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
                 content.content[:800],
                 api_key=settings.openrouter_api_key,
                 base_url=settings.openrouter_base_url,
-                model=settings.openrouter_summary_model,
+                model=summary_model or settings.openrouter_summary_model,
             )
 
             # Summarize
@@ -413,7 +413,7 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
                 category=category,
                 api_key=settings.openrouter_api_key,
                 base_url=settings.openrouter_base_url,
-                model=settings.openrouter_summary_model,
+                model=summary_model or settings.openrouter_summary_model,
                 system_prompt=settings.summary_system_prompt,
                 user_prompt_template=settings.summary_user_prompt_template,
             )
@@ -456,7 +456,7 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
     return result
 
 
-async def run_all_sources(settings, store, rag) -> list[CollectionResult]:
+async def run_all_sources(settings, store, rag, summary_model: str | None = None) -> list[CollectionResult]:
     sources = await store.list_feed_sources()
     enabled = [s for s in sources if s.get("enabled")]
 
@@ -464,13 +464,19 @@ async def run_all_sources(settings, store, rag) -> list[CollectionResult]:
         logger.info("Collector: no enabled sources, skipping")
         return []
 
-    logger.info("Collector: starting collection cycle, %d enabled sources", len(enabled))
+    # 동적 모델 조회
+    if not summary_model:
+        mc = await store.get_model_config()
+        if mc:
+            summary_model = mc["summary_model"]
+
+    logger.info("Collector: starting collection cycle, %d enabled sources, model=%s", len(enabled), summary_model or "default")
     t_start = time.perf_counter()
 
     results: list[CollectionResult] = []
     for source in enabled:
         try:
-            result = await collect_source(source, settings, rag)
+            result = await collect_source(source, settings, rag, summary_model=summary_model)
             results.append(result)
 
             # Update source status in DB

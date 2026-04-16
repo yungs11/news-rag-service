@@ -71,6 +71,16 @@ embedder = Embedder(settings.embedding_model)
 rag = RagService(settings, store, embedder)
 
 
+async def _get_summary_model() -> str:
+    mc = await store.get_model_config()
+    return mc["summary_model"] if mc else settings.openrouter_summary_model
+
+
+async def _get_rag_model() -> str:
+    mc = await store.get_model_config()
+    return mc["rag_model"] if mc else settings.openrouter_rag_model
+
+
 async def _scheduled_collection():
     """Cron job: collect from all enabled sources."""
     logger.info("Scheduled collection triggered")
@@ -105,6 +115,11 @@ async def lifespan(app: FastAPI):
 
     # Seed default feed sources if empty
     await seed_default_sources(store)
+
+    # Initialize model config if not exists
+    mc = await store.get_model_config()
+    if not mc:
+        await store.upsert_model_config(settings.openrouter_summary_model, settings.openrouter_rag_model)
 
     # Initialize retention config if not exists
     ret = await store.get_retention_settings()
@@ -224,6 +239,7 @@ async def search(req: SearchRequest):
 
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest):
+    await rag.refresh_model()
     history = [{"role": h.role, "content": h.content} for h in req.history] if req.history else None
     result = await rag.ask(req.query, req.limit, req.category, user_id=req.user_id,
                            document_id=req.document_id, history=history)
@@ -563,6 +579,9 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
             source_type=content.source_type,
         )
 
+    # 동적 모델 조회
+    summary_model = await _get_summary_model()
+
     # 카테고리를 먼저 분류해서 요약 프롬프트에 전달 (AI/LLM 여부에 따라 섹션 조건 분기)
     t1 = time.perf_counter()
     category = await classify_category(
@@ -570,9 +589,9 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         content.content[:800],
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
-        model=settings.openrouter_summary_model,
+        model=summary_model,
     )
-    logger.info("Pipeline step classify: category=%s elapsed=%.2fs", category, time.perf_counter() - t1)
+    logger.info("Pipeline step classify: category=%s model=%s elapsed=%.2fs", category, summary_model, time.perf_counter() - t1)
 
     t2 = time.perf_counter()
     summary = await summarize_content(
@@ -580,7 +599,7 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
         category=category,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
-        model=settings.openrouter_summary_model,
+        model=summary_model,
         system_prompt=settings.summary_system_prompt,
         user_prompt_template=settings.summary_user_prompt_template,
     )
@@ -871,3 +890,24 @@ async def run_cleanup():
     history = sched.get_cleanup_history()
     latest = history[-1] if history else {"deleted": 0, "protected": 0, "active": 0}
     return {"ok": True, **latest}
+
+
+# ── Model Settings ───────────────────────────────────────────────────────────
+
+@app.get("/settings/models")
+async def get_model_settings():
+    mc = await store.get_model_config()
+    if mc:
+        return mc
+    return {"summary_model": settings.openrouter_summary_model, "rag_model": settings.openrouter_rag_model}
+
+
+@app.put("/settings/models")
+async def update_model_settings(body: dict):
+    summary_model = body.get("summary_model", "").strip()
+    rag_model = body.get("rag_model", "").strip()
+    if not summary_model or not rag_model:
+        raise HTTPException(status_code=400, detail="summary_model and rag_model are required")
+    await store.upsert_model_config(summary_model, rag_model)
+    logger.info("Model config updated: summary=%s rag=%s", summary_model, rag_model)
+    return {"ok": True, "summary_model": summary_model, "rag_model": rag_model}

@@ -715,6 +715,28 @@ class Neo4jStore:
             records = await result.data()
             return {str(r["feed_url"]) for r in records if r.get("feed_url")}
 
+    # ─── Model Config ────────────────────────────────────────────────────────
+
+    async def get_model_config(self) -> dict | None:
+        async with self._driver.session() as s:
+            result = await s.run(
+                "MATCH (mc:ModelConfig {id: 'default'}) RETURN mc.summary_model AS summary_model, mc.rag_model AS rag_model"
+            )
+            record = await result.single()
+            if record:
+                return {"summary_model": str(record["summary_model"]), "rag_model": str(record["rag_model"])}
+            return None
+
+    async def upsert_model_config(self, summary_model: str, rag_model: str) -> None:
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                MERGE (mc:ModelConfig {id: 'default'})
+                SET mc.summary_model = $summary_model, mc.rag_model = $rag_model, mc.updated_at = datetime()
+                """,
+                summary_model=summary_model, rag_model=rag_model,
+            )
+
     # ─── Retention / Cleanup ─────────────────────────────────────────────────
 
     async def get_retention_settings(self) -> dict:

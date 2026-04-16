@@ -286,6 +286,13 @@ export const api = {
   collectorTestFeed: (params: { feed_type: string; feed_url?: string; keywords?: string; max_items?: number }) =>
     post<{ ok: boolean; count: number; entries: { title: string; url: string }[]; error?: string }>("/collector/test-feed", params),
 
+  // ── Model Settings ──
+  modelSettings: () =>
+    get<{ summary_model: string; rag_model: string }>("/settings/models"),
+
+  modelUpdate: (summary_model: string, rag_model: string) =>
+    put<{ ok: boolean; summary_model: string; rag_model: string }>("/settings/models", { summary_model, rag_model }),
+
   // ── Retention ──
   retentionSettings: () =>
     get<{ days: number; enabled: boolean }>("/retention/settings"),
