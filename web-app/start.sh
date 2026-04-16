@@ -19,8 +19,10 @@ echo "web-app 빌드 중..."
 npm run build
 
 echo "web-app 시작 중 (port 3000)..."
-nohup npm start -- -p 3000 > "$LOG_FILE" 2>&1 &
-echo "PID: $!"
+setsid -f npm start -- -p 3000 > "$LOG_FILE" 2>&1 < /dev/null
+sleep 2
+NEW_PID=$(lsof -ti:3000 2>/dev/null | head -1 || true)
+echo "PID: ${NEW_PID:-unknown}"
 
 # 헬스체크
 for i in {1..15}; do

@@ -79,6 +79,8 @@ class DocumentDetail(BaseModel):
     summary_text: str
     raw_text: str | None = None
     summary_date: str | None
+    ingest_type: str = "manual"  # "auto" | "manual"
+    collected_from: str | None = None  # 자동 수집 소스 이름
     created_at: str
 
 
@@ -110,3 +112,68 @@ class SummarizeResponse(BaseModel):
     source_type: str | None = None
     document_id: str | None = None
     created: bool | None = None
+
+
+# ── Feed Source (Collector) ──────────────────────────────────────────────────
+
+FilterMode = Literal["all", "ai_only"]
+FeedType = Literal["rss", "reddit_rss", "arxiv"]
+
+
+class FeedSourceCreate(BaseModel):
+    name: str
+    feed_url: str = ""
+    feed_type: FeedType = "rss"
+    filter_mode: FilterMode = "all"
+    enabled: bool = True
+    max_items: int = Field(default=10, ge=1, le=50)
+    keywords: str | None = None  # arXiv 검색 키워드 (쉼표 구분)
+
+
+class FeedSourceUpdate(BaseModel):
+    name: str | None = None
+    feed_url: str | None = None
+    feed_type: FeedType | None = None
+    filter_mode: FilterMode | None = None
+    enabled: bool | None = None
+    max_items: int | None = Field(default=None, ge=1, le=50)
+    keywords: str | None = None
+
+
+class FeedSourceDetail(BaseModel):
+    id: str
+    name: str
+    feed_url: str
+    feed_type: str
+    filter_mode: str
+    enabled: bool
+    max_items: int
+    keywords: str | None = None
+    last_collected_at: str | None
+    last_collected_count: int | None
+    created_at: str
+
+
+class FeedSourceListResponse(BaseModel):
+    sources: list[FeedSourceDetail]
+
+
+class CollectionResultItem(BaseModel):
+    source_name: str
+    source_id: str
+    total_entries: int
+    filtered: int
+    collected: int
+    skipped_duplicate: int
+    failed: int
+    errors: list[str]
+
+
+class CollectionRunResponse(BaseModel):
+    status: str
+    results: list[CollectionResultItem]
+
+
+class CollectorStatusResponse(BaseModel):
+    last_run: str | None
+    results: list[CollectionResultItem]

@@ -17,6 +17,8 @@ export interface SearchItem {
   score: number;
 }
 
+export type IngestType = "auto" | "manual";
+
 export interface DocumentDetail {
   id: string;
   source_url: string;
@@ -26,12 +28,42 @@ export interface DocumentDetail {
   summary_text: string;
   raw_text?: string | null;
   summary_date: string | null;
+  ingest_type: IngestType;
+  collected_from: string | null;
   created_at: string;
 }
 
 export interface CategoryItem {
   category: string;
   document_count: number;
+}
+
+export type FilterMode = "all" | "ai_only";
+export type FeedType = "rss" | "reddit_rss" | "arxiv";
+
+export interface FeedSource {
+  id: string;
+  name: string;
+  feed_url: string;
+  feed_type: FeedType;
+  filter_mode: FilterMode;
+  enabled: boolean;
+  max_items: number;
+  keywords: string | null;
+  last_collected_at: string | null;
+  last_collected_count: number | null;
+  created_at: string;
+}
+
+export interface CollectionResultItem {
+  source_name: string;
+  source_id: string;
+  total_entries: number;
+  filtered: number;
+  collected: number;
+  skipped_duplicate: number;
+  failed: number;
+  errors: string[];
 }
 
 function _userIdParam(): string | null {
@@ -58,6 +90,36 @@ async function post<T>(path: string, body: object): Promise<T> {
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = `${res.status}: ${typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)}`;
+    } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+async function put<T>(path: string, body: object): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = `${res.status}: ${typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)}`;
+    } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -132,6 +194,12 @@ export const api = {
 
   getDocument: (id: string) => get<DocumentDetail>(`/documents/${id}`),
 
+  markRead: (documentId: string, userId: string) =>
+    post<{ ok: boolean }>("/documents/read", { document_id: documentId, user_id: userId }),
+
+  getReadIds: (userId: string) =>
+    get<{ ids: string[] }>(`/documents/read-ids?user_id=${encodeURIComponent(userId)}`),
+
   deleteDocument: async (id: string) => {
     const res = await fetch(`${BASE}/documents/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -161,4 +229,33 @@ export const api = {
       nodes: { id: string; label: string; type: "category" | "document"; category?: string; source_url?: string; source_type?: string; summary_text?: string; user_id?: string }[];
       links: { source: string; target: string }[];
     }>("/graph"),
+
+  // ── Collector ──
+  collectorSources: () =>
+    get<{ sources: FeedSource[] }>("/collector/sources"),
+
+  collectorAddSource: (source: {
+    name: string;
+    feed_url?: string;
+    feed_type?: FeedType;
+    filter_mode?: FilterMode;
+    enabled?: boolean;
+    max_items?: number;
+    keywords?: string;
+  }) => post<{ id: string }>("/collector/sources", source),
+
+  collectorUpdateSource: (id: string, data: Partial<Omit<FeedSource, "id" | "created_at" | "last_collected_at" | "last_collected_count">>) =>
+    put<{ ok: boolean }>(`/collector/sources/${id}`, data),
+
+  collectorDeleteSource: (id: string) =>
+    del<{ ok: boolean }>(`/collector/sources/${id}`),
+
+  collectorRunSource: (id: string) =>
+    post<{ status: string; results: CollectionResultItem[] }>(`/collector/sources/${id}/run`, {}),
+
+  collectorRunAll: () =>
+    post<{ status: string; results: CollectionResultItem[] }>("/collector/run", {}),
+
+  collectorStatus: () =>
+    get<{ last_run: string | null; results: CollectionResultItem[] }>("/collector/status"),
 };

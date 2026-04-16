@@ -15,14 +15,16 @@ if [ -n "$PID" ]; then
 fi
 
 echo "rag-service 시작 중 (port 8003)..."
-nohup .venv/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8003 > "$LOG_FILE" 2>&1 &
-echo "PID: $!"
+setsid -f .venv/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8003 > "$LOG_FILE" 2>&1 < /dev/null
+sleep 1
+NEW_PID=$(lsof -ti:8003 2>/dev/null | head -1 || true)
+echo "PID: ${NEW_PID:-unknown}"
 
-# 헬스체크
-for i in {1..10}; do
+# 헬스체크 (임베딩 모델 로딩에 시간이 걸림 — 최대 90초 대기)
+for i in {1..90}; do
   sleep 1
   if curl -sf http://localhost:8003/health > /dev/null 2>&1; then
-    echo "rag-service 정상 기동 완료"
+    echo "rag-service 정상 기동 완료 (${i}s)"
     exit 0
   fi
 done

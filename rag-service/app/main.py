@@ -13,6 +13,13 @@ from app.config import Settings
 from app.schemas import (
     AskRequest,
     AskResponse,
+    CollectionResultItem,
+    CollectionRunResponse,
+    CollectorStatusResponse,
+    FeedSourceCreate,
+    FeedSourceDetail,
+    FeedSourceListResponse,
+    FeedSourceUpdate,
     HistoryMessage,
     CategoriesResponse,
     CategoryItem,
@@ -35,6 +42,12 @@ from app.services.content_extractor import (
     is_valid_content,
 )
 from app.services.summarizer import classify_category, is_failed_summary, summarize_content
+from app.services.news_collector import (
+    collect_source,
+    run_all_sources,
+    seed_default_sources,
+)
+from app import scheduler as sched
 from app.services.chat_store import (
     append_messages,
     create_session,
@@ -56,6 +69,13 @@ embedder = Embedder(settings.embedding_model)
 rag = RagService(settings, store, embedder)
 
 
+async def _scheduled_collection():
+    """Cron job: collect from all enabled sources."""
+    logger.info("Scheduled collection triggered")
+    results = await run_all_sources(settings, store, rag)
+    sched.set_last_status(results)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Connecting to Neo4j...")
@@ -63,7 +83,18 @@ async def lifespan(app: FastAPI):
     await store.ensure_indexes()
     logger.info("Neo4j ready")
     await init_db()
+
+    # Seed default feed sources if empty
+    await seed_default_sources(store)
+
+    # Start scheduler
+    if settings.collector_enabled:
+        sched.setup_scheduler(settings.collector_cron_hours, _scheduled_collection)
+        sched.start()
+
     yield
+
+    sched.shutdown()
     await store.close()
     logger.info("Neo4j connection closed")
 
@@ -91,6 +122,11 @@ app.add_middleware(
 )
 
 
+def _ingest_type(row: dict) -> str:
+    uid = str(row.get("user_id", "") or "")
+    return "auto" if uid == settings.collector_user_id else "manual"
+
+
 def _to_search_item(hit: dict) -> SearchItem:
     return SearchItem(
         document_id=str(hit.get("document_id", "")),
@@ -99,6 +135,7 @@ def _to_search_item(hit: dict) -> SearchItem:
         category=str(hit.get("category", "")),
         source_type=str(hit.get("source_type", "")),
         summary_date=str(hit["summary_date"]) if hit.get("summary_date") else None,
+        summary_text=str(hit.get("summary_text", "")),
         chunk_text=str(hit.get("chunk_text", "")),
         score=float(hit.get("score", 0.0)),
     )
@@ -244,6 +281,8 @@ async def recent_documents(limit: int = 10, user_id: str | None = None):
             category=str(r.get("category", "")),
             summary_text=str(r.get("summary_text", "")),
             summary_date=str(r["summary_date"]) if r.get("summary_date") else None,
+            ingest_type=_ingest_type(r),
+            collected_from=str(r["collected_from"]) if r.get("collected_from") else None,
             created_at=str(r.get("created_at", "")),
         )
         for r in rows
@@ -256,6 +295,28 @@ async def list_categories(user_id: str | None = None):
     rows = await store.list_categories(user_id=user_id)
     items = [CategoryItem(category=str(r["category"]), document_count=int(r["document_count"])) for r in rows]
     return CategoriesResponse(items=items)
+
+
+# ── Read Status ───────────────────────────────────────────────────────────────
+
+
+class MarkReadRequest(BaseModel):
+    document_id: str
+    user_id: str
+
+
+@app.post("/documents/read")
+async def mark_read(req: MarkReadRequest):
+    await store.mark_document_read(req.document_id, req.user_id)
+    return {"ok": True}
+
+
+@app.get("/documents/read-ids")
+async def get_read_ids(user_id: str | None = None):
+    if not user_id:
+        return {"ids": []}
+    ids = await store.get_read_doc_ids(user_id)
+    return {"ids": ids}
 
 
 # ── Chat History ──────────────────────────────────────────────────────────────
@@ -532,5 +593,100 @@ async def get_document(document_id: str):
         summary_text=str(doc.get("summary_text", "")),
         raw_text=doc.get("raw_text") or None,
         summary_date=str(doc["summary_date"]) if doc.get("summary_date") else None,
+        ingest_type=_ingest_type(doc),
+        collected_from=str(doc["collected_from"]) if doc.get("collected_from") else None,
         created_at=str(doc.get("created_at", "")),
+    )
+
+
+# ── Collector API ─────────────────────────────────────────────────────────────
+
+def _to_feed_source_detail(row: dict) -> FeedSourceDetail:
+    return FeedSourceDetail(
+        id=str(row.get("id", "")),
+        name=str(row.get("name", "")),
+        feed_url=str(row.get("feed_url", "")),
+        feed_type=str(row.get("feed_type", "rss")),
+        filter_mode=str(row.get("filter_mode", "all")),
+        enabled=bool(row.get("enabled", True)),
+        max_items=int(row.get("max_items", 10)),
+        keywords=str(row["keywords"]) if row.get("keywords") else None,
+        last_collected_at=str(row["last_collected_at"]) if row.get("last_collected_at") else None,
+        last_collected_count=int(row["last_collected_count"]) if row.get("last_collected_count") is not None else None,
+        created_at=str(row.get("created_at", "")),
+    )
+
+
+@app.get("/collector/sources", response_model=FeedSourceListResponse)
+async def collector_list_sources():
+    rows = await store.list_feed_sources()
+    return FeedSourceListResponse(sources=[_to_feed_source_detail(r) for r in rows])
+
+
+@app.post("/collector/sources", status_code=201)
+async def collector_add_source(req: FeedSourceCreate):
+    source_id = await store.create_feed_source(
+        name=req.name,
+        feed_url=req.feed_url,
+        feed_type=req.feed_type,
+        filter_mode=req.filter_mode,
+        enabled=req.enabled,
+        max_items=req.max_items,
+        keywords=req.keywords,
+    )
+    logger.info("FeedSource created: id=%s name=%s", source_id, req.name)
+    return {"id": source_id}
+
+
+@app.put("/collector/sources/{source_id}")
+async def collector_update_source(source_id: str, req: FeedSourceUpdate):
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updated = await store.update_feed_source(source_id, **updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Source not found")
+    logger.info("FeedSource updated: id=%s fields=%s", source_id, list(updates.keys()))
+    return {"ok": True}
+
+
+@app.delete("/collector/sources/{source_id}")
+async def collector_delete_source(source_id: str):
+    deleted = await store.delete_feed_source(source_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Source not found")
+    logger.info("FeedSource deleted: id=%s", source_id)
+    return {"ok": True}
+
+
+@app.post("/collector/sources/{source_id}/run", response_model=CollectionRunResponse)
+async def collector_run_source(source_id: str):
+    source = await store.get_feed_source(source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    result = await collect_source(source, settings, rag)
+    await store.update_source_collection_status(source_id, result.collected)
+    sched.set_last_status([result])
+    return CollectionRunResponse(
+        status="ok",
+        results=[CollectionResultItem(**result.to_dict())],
+    )
+
+
+@app.post("/collector/run", response_model=CollectionRunResponse)
+async def collector_run_all():
+    results = await run_all_sources(settings, store, rag)
+    sched.set_last_status(results)
+    return CollectionRunResponse(
+        status="ok",
+        results=[CollectionResultItem(**r.to_dict()) for r in results],
+    )
+
+
+@app.get("/collector/status", response_model=CollectorStatusResponse)
+async def collector_status():
+    last_run, results = sched.get_last_status()
+    return CollectorStatusResponse(
+        last_run=last_run,
+        results=[CollectionResultItem(**r.to_dict()) for r in results],
     )

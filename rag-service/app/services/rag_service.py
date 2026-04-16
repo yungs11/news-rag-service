@@ -52,6 +52,7 @@ class RagService:
         raw_text: str,
         summary_date: str | None,
         user_id: str | None = None,
+        collected_from: str | None = None,
     ) -> tuple[str, bool]:
         # 청킹: summary 우선, raw 보조
         summary_chunks = _chunks(summary_text, chunk_size=700, overlap=80)
@@ -76,6 +77,7 @@ class RagService:
             summary_date=summary_date,
             chunk_embeddings=chunk_embeddings,
             user_id=user_id,
+            collected_from=collected_from,
         )
 
     async def delete_document(self, document_id: str) -> bool:

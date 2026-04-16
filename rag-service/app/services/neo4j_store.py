@@ -59,6 +59,11 @@ class Neo4jStore:
                 "CREATE CONSTRAINT tag_name_unique IF NOT EXISTS "
                 "FOR (t:Tag) REQUIRE t.name IS UNIQUE"
             )
+            # Unique constraint: FeedSource
+            await s.run(
+                "CREATE CONSTRAINT feed_source_id IF NOT EXISTS "
+                "FOR (fs:FeedSource) REQUIRE fs.id IS UNIQUE"
+            )
             # Vector index (Neo4j 5.11+)
             await s.run(
                 f"""
@@ -97,6 +102,7 @@ class Neo4jStore:
         summary_date: str | None,
         chunk_embeddings: list[tuple[str, str, list[float]]],  # (text, chunk_type, embedding)
         user_id: str | None = None,
+        collected_from: str | None = None,
     ) -> tuple[str, bool]:
         """Returns (document_id, created). created=False means duplicate."""
         content_hash = hashlib.sha256(raw_text.encode("utf-8", errors="ignore")).hexdigest()
@@ -126,6 +132,7 @@ class Neo4jStore:
                     content_hash: $content_hash,
                     summary_date: $summary_date,
                     user_id: $user_id,
+                    collected_from: $collected_from,
                     created_at: datetime()
                 })
                 """,
@@ -139,6 +146,7 @@ class Neo4jStore:
                 content_hash=content_hash,
                 summary_date=summary_date,
                 user_id=user_id,
+                collected_from=collected_from,
             )
 
             for idx, (text, chunk_type, embedding) in enumerate(chunk_embeddings):
@@ -306,6 +314,8 @@ class Neo4jStore:
                        d.category AS category, d.summary_text AS summary_text,
                        d.raw_text AS raw_text,
                        d.summary_date AS summary_date,
+                       d.user_id AS user_id,
+                       d.collected_from AS collected_from,
                        toString(d.created_at) AS created_at
                 """,
                 id=document_id,
@@ -324,6 +334,8 @@ class Neo4jStore:
                        d.source_type AS source_type, d.title AS title,
                        d.category AS category, d.summary_text AS summary_text,
                        d.summary_date AS summary_date,
+                       d.user_id AS user_id,
+                       d.collected_from AS collected_from,
                        toString(d.created_at) AS created_at
                 ORDER BY d.created_at DESC
                 LIMIT $limit
@@ -403,3 +415,161 @@ class Neo4jStore:
                 user_id=user_id,
             )
             return await result.data()
+
+    # ─── Read Status ────────────────────────────────────────────────────────
+
+    async def mark_document_read(self, document_id: str, user_id: str) -> None:
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                MATCH (d:Document {id: $doc_id})
+                MERGE (r:Reader {user_id: $user_id})
+                MERGE (r)-[:HAS_READ]->(d)
+                """,
+                doc_id=document_id,
+                user_id=user_id,
+            )
+
+    async def get_read_doc_ids(self, user_id: str) -> list[str]:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (r:Reader {user_id: $user_id})-[:HAS_READ]->(d:Document)
+                RETURN d.id AS id
+                """,
+                user_id=user_id,
+            )
+            records = await result.data()
+            return [str(r["id"]) for r in records]
+
+    # ─── FeedSource CRUD ──────────────────────────────────────────────────────
+
+    async def list_feed_sources(self) -> list[dict[str, Any]]:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (fs:FeedSource)
+                RETURN fs.id AS id, fs.name AS name, fs.feed_url AS feed_url,
+                       fs.feed_type AS feed_type, fs.filter_mode AS filter_mode,
+                       fs.enabled AS enabled, fs.max_items AS max_items,
+                       toString(fs.last_collected_at) AS last_collected_at,
+                       fs.keywords AS keywords,
+                       fs.last_collected_count AS last_collected_count,
+                       toString(fs.created_at) AS created_at
+                ORDER BY fs.created_at DESC
+                """
+            )
+            return await result.data()
+
+    async def get_feed_source(self, source_id: str) -> dict[str, Any] | None:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (fs:FeedSource {id: $id})
+                RETURN fs.id AS id, fs.name AS name, fs.feed_url AS feed_url,
+                       fs.feed_type AS feed_type, fs.filter_mode AS filter_mode,
+                       fs.enabled AS enabled, fs.max_items AS max_items,
+                       toString(fs.last_collected_at) AS last_collected_at,
+                       fs.keywords AS keywords,
+                       fs.last_collected_count AS last_collected_count,
+                       toString(fs.created_at) AS created_at
+                """,
+                id=source_id,
+            )
+            record = await result.single()
+            return dict(record) if record else None
+
+    async def create_feed_source(
+        self,
+        *,
+        name: str,
+        feed_url: str,
+        feed_type: str = "rss",
+        filter_mode: str = "all",
+        enabled: bool = True,
+        max_items: int = 10,
+        keywords: str | None = None,
+    ) -> str:
+        source_id = str(uuid.uuid4())
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                CREATE (fs:FeedSource {
+                    id: $id,
+                    name: $name,
+                    feed_url: $feed_url,
+                    feed_type: $feed_type,
+                    filter_mode: $filter_mode,
+                    enabled: $enabled,
+                    max_items: $max_items,
+                    keywords: $keywords,
+                    last_collected_at: null,
+                    last_collected_count: null,
+                    created_at: datetime()
+                })
+                """,
+                id=source_id,
+                name=name,
+                feed_url=feed_url,
+                feed_type=feed_type,
+                filter_mode=filter_mode,
+                enabled=enabled,
+                max_items=max_items,
+                keywords=keywords,
+            )
+        return source_id
+
+    async def update_feed_source(self, source_id: str, **kwargs: Any) -> bool:
+        allowed = {"name", "feed_url", "feed_type", "filter_mode", "enabled", "max_items", "keywords"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        if not updates:
+            return False
+        set_clauses = ", ".join(f"fs.{k} = ${k}" for k in updates)
+        params = {"id": source_id, **updates}
+        async with self._driver.session() as s:
+            result = await s.run(
+                f"MATCH (fs:FeedSource {{id: $id}}) SET {set_clauses} RETURN fs.id AS id",
+                **params,
+            )
+            record = await result.single()
+            return record is not None
+
+    async def delete_feed_source(self, source_id: str) -> bool:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (fs:FeedSource {id: $id})
+                DETACH DELETE fs
+                RETURN count(fs) AS deleted
+                """,
+                id=source_id,
+            )
+            record = await result.single()
+            return bool(record and record["deleted"] > 0)
+
+    async def update_source_collection_status(self, source_id: str, count: int) -> None:
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                MATCH (fs:FeedSource {id: $id})
+                SET fs.last_collected_at = datetime(),
+                    fs.last_collected_count = $count
+                """,
+                id=source_id,
+                count=count,
+            )
+
+    async def is_url_already_ingested(self, url: str) -> bool:
+        async with self._driver.session() as s:
+            result = await s.run(
+                "MATCH (d:Document {source_url: $url}) RETURN count(d) AS cnt",
+                url=url,
+            )
+            record = await result.single()
+            return bool(record and record["cnt"] > 0)
+
+    async def feed_sources_count(self) -> int:
+        async with self._driver.session() as s:
+            result = await s.run("MATCH (fs:FeedSource) RETURN count(fs) AS cnt")
+            record = await result.single()
+            return int(record["cnt"]) if record else 0

@@ -13,7 +13,7 @@ import {
   deleteSession,
   formatDate,
 } from "@/lib/chat-history";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 interface Message extends StoredMessage {}
@@ -33,6 +33,49 @@ const EXAMPLES = [
   "LLM 파인튜닝과 RAG 중 어떤 상황에 무엇을 쓸까?",
   "MLOps 파이프라인 구성 시 주요 고려사항은?",
 ];
+
+const markdownComponents: Components = {
+  h1: ({ children }) => <h1 className="mt-3 mb-2 text-base font-bold text-gray-900">{children}</h1>,
+  h2: ({ children }) => <h2 className="mt-3 mb-2 text-sm font-bold text-gray-900">{children}</h2>,
+  h3: ({ children }) => <h3 className="mt-3 mb-2 text-sm font-semibold text-gray-900">{children}</h3>,
+  p: ({ children }) => <p className="my-1 whitespace-pre-wrap leading-relaxed text-gray-800">{children}</p>,
+  ul: ({ children }) => <ul className="my-2 list-disc pl-5 text-gray-800 space-y-1">{children}</ul>,
+  ol: ({ children }) => <ol className="my-2 list-decimal pl-5 text-gray-800 space-y-1">{children}</ol>,
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="break-all text-blue-600 underline underline-offset-2 hover:text-blue-700"
+    >
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="my-2 rounded-r-lg border-l-4 border-blue-200 bg-blue-50/80 px-3 py-2 text-gray-700">
+      {children}
+    </blockquote>
+  ),
+  hr: () => <hr className="my-3 border-gray-200" />,
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded-lg bg-slate-900 px-3 py-3 text-xs leading-6 text-slate-100">
+      {children}
+    </pre>
+  ),
+  code: ({ className, children }) => <code className={`${className ?? ""} font-mono`}>{children}</code>,
+  table: ({ children }) => (
+    <div className="my-3 overflow-x-auto">
+      <table className="min-w-full border-collapse text-xs text-gray-800">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-gray-100">{children}</thead>,
+  th: ({ children }) => (
+    <th className="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-900">{children}</th>
+  ),
+  td: ({ children }) => <td className="border border-gray-200 px-3 py-2 align-top text-gray-700">{children}</td>,
+};
 
 function ChatPageInner() {
   const searchParams = useSearchParams();
@@ -347,18 +390,10 @@ function ChatPageInner() {
                 {msg.role === "user" ? (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 ) : (
-                  <div className="prose prose-sm prose-gray max-w-none
-                    prose-p:my-1 prose-p:leading-relaxed
-                    prose-headings:font-bold prose-headings:my-2
-                    prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
-                    prose-ul:my-1 prose-ul:pl-4 prose-ol:my-1 prose-ol:pl-4
-                    prose-li:my-0.5
-                    prose-strong:font-semibold
-                    prose-code:bg-gray-200 prose-code:px-1 prose-code:rounded prose-code:text-xs prose-code:font-mono
-                    prose-pre:bg-gray-800 prose-pre:text-gray-100 prose-pre:rounded-lg prose-pre:p-3 prose-pre:text-xs prose-pre:overflow-x-auto
-                    prose-blockquote:border-l-2 prose-blockquote:border-blue-300 prose-blockquote:pl-3 prose-blockquote:text-gray-600
-                    prose-hr:my-2">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <div className="chat-markdown max-w-none break-words text-sm leading-relaxed text-gray-800">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      {msg.content}
+                    </ReactMarkdown>
                   </div>
                 )}
                 {msg.sources && msg.sources.length > 0 && (

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
+import { getUserId } from "@/lib/auth";
 import IngestModal from "./components/IngestModal";
 import SummaryRenderer from "./components/SummaryRenderer";
 
@@ -95,6 +96,11 @@ function SummaryModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
               <CategoryBadge category={doc.category} />
               <span className="text-xs text-gray-400">{SOURCE_ICONS[doc.source_type] ?? "🔗"} {doc.source_type}</span>
               {resolvedDoc.summary_date && <span className="text-xs text-gray-400">{resolvedDoc.summary_date}</span>}
+              {resolvedDoc.collected_from && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-50 text-cyan-600">
+                  {resolvedDoc.collected_from}
+                </span>
+              )}
             </div>
             <h2 className="text-sm font-bold text-gray-900 leading-snug">{resolvedDoc.title || "Untitled"}</h2>
           </div>
@@ -246,19 +252,35 @@ export default function HomePage() {
   const [selectedDoc, setSelectedDoc] = useState<DocumentDetail | null>(null);
   const [shareDoc, setShareDoc] = useState<DocumentDetail | null>(null);
   const [showIngest, setShowIngest] = useState(false);
+  const [readIds, setReadIds] = useState<Set<string>>(new Set());
+  const [mounted, setMounted] = useState(false);
+
+  const handleOpenDoc = (doc: DocumentDetail) => {
+    setSelectedDoc(doc);
+    if (doc.id) {
+      const uid = getUserId();
+      if (uid) {
+        api.markRead(doc.id, uid).catch(() => {});
+      }
+      setReadIds((prev) => new Set([...prev, doc.id]));
+    }
+  };
 
   const loadDocs = useCallback(() => {
+    const uid = typeof window !== "undefined" ? getUserId() : null;
     Promise.all([
       api.recentDocuments(50).catch(() => null),
       api.categories().catch(() => null),
-    ]).then(([docRes, catRes]) => {
+      uid ? api.getReadIds(uid).catch(() => null) : Promise.resolve(null),
+    ]).then(([docRes, catRes, readRes]) => {
       if (!docRes && !catRes) setApiError(true);
       if (docRes) setDocs(docRes.items);
       if (catRes) setCategories(catRes.items);
+      if (readRes) setReadIds(new Set(readRes.ids));
     });
   }, []);
 
-  useEffect(() => { loadDocs(); }, [loadDocs]);
+  useEffect(() => { setMounted(true); loadDocs(); }, [loadDocs]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -280,6 +302,8 @@ export default function HomePage() {
           category: item.category,
           summary_text: item.summary_text,
           summary_date: item.summary_date,
+          ingest_type: "manual",
+          collected_from: null,
           created_at: "",
         });
       }
@@ -401,13 +425,31 @@ export default function HomePage() {
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
-          {displayDocs.map((doc, i) => (
+          {displayDocs.map((doc, i) => {
+            const unread = mounted && doc.id ? !readIds.has(doc.id) : false;
+            return (
             <div
               key={doc.id || `${doc.source_url}-${i}`}
-              className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:border-blue-200 hover:shadow-md transition-all group"
+              className={`bg-white rounded-xl border shadow-sm p-5 hover:border-blue-200 hover:shadow-md transition-all group ${unread ? "border-blue-100" : "border-gray-100"}`}
             >
               <div className="flex items-start justify-between gap-3 mb-3">
-                <CategoryBadge category={doc.category} />
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {/* Unread dot */}
+                  {unread && (
+                    <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" title="읽지 않음" />
+                  )}
+                  <CategoryBadge category={doc.category} />
+                  {/* Ingest type badge */}
+                  {doc.ingest_type === "auto" ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-50 text-cyan-600">
+                      자동{doc.collected_from ? ` · ${doc.collected_from}` : ""}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-500">
+                      수동
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-xs text-gray-400">
                     {SOURCE_ICONS[doc.source_type] ?? "🔗"}
@@ -418,13 +460,13 @@ export default function HomePage() {
                 </div>
               </div>
 
-              <button onClick={() => setSelectedDoc(doc)} className="text-left w-full">
-                <h3 className="font-semibold text-sm text-gray-900 leading-snug mb-2 line-clamp-2 group-hover:text-blue-700 transition-colors cursor-pointer">
+              <button onClick={() => handleOpenDoc(doc)} className="text-left w-full">
+                <h3 className={`font-semibold text-sm leading-snug mb-2 line-clamp-2 group-hover:text-blue-700 transition-colors cursor-pointer ${unread ? "text-gray-900" : "text-gray-500"}`}>
                   {doc.title || "Untitled"}
                 </h3>
               </button>
 
-              <button onClick={() => setSelectedDoc(doc)} className="text-left w-full mb-4">
+              <button onClick={() => handleOpenDoc(doc)} className="text-left w-full mb-4">
                 <p className="text-xs text-gray-500 leading-relaxed line-clamp-3 cursor-pointer">
                   {doc.summary_text?.slice(0, 250)}
                 </p>
@@ -489,7 +531,8 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 

@@ -30,6 +30,9 @@ class Settings:
     allowed_user_ids: frozenset = frozenset()
     summary_system_prompt: str = SUMMARY_SYSTEM_PROMPT
     summary_user_prompt_template: str = SUMMARY_USER_PROMPT_TEMPLATE
+    collector_enabled: bool = True
+    collector_cron_hours: str = "9,18"
+    collector_user_id: str = "auto-collector"
 
     @staticmethod
     def from_env() -> "Settings":
@@ -50,4 +53,7 @@ class Settings:
             allowed_user_ids=allowed,
             summary_system_prompt=_env_text("SUMMARY_SYSTEM_PROMPT", SUMMARY_SYSTEM_PROMPT),
             summary_user_prompt_template=_env_text("SUMMARY_USER_PROMPT_TEMPLATE", SUMMARY_USER_PROMPT_TEMPLATE),
+            collector_enabled=os.getenv("COLLECTOR_ENABLED", "true").lower() in ("true", "1", "yes"),
+            collector_cron_hours=os.getenv("COLLECTOR_CRON_HOURS", "9,18"),
+            collector_user_id=os.getenv("COLLECTOR_USER_ID", "auto-collector"),
         )
