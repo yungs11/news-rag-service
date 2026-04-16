@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
 import IngestModal from "./components/IngestModal";
@@ -374,6 +374,24 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => { setMounted(true); loadDocs(); }, [loadDocs]);
+
+  // ?doc=ID 쿼리 파라미터로 문서 모달 자동 오픈
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const docId = searchParams.get("doc");
+    if (docId && docs.length > 0) {
+      const found = docs.find((d) => d.id === docId);
+      if (found) {
+        handleOpenDoc(found);
+      } else {
+        // docs에 없으면 API에서 직접 로드
+        api.getDocument(docId).then((detail) => {
+          if (detail) handleOpenDoc(detail);
+        }).catch(() => {});
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, docs]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();

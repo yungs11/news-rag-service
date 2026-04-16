@@ -237,6 +237,13 @@ export default function PrivatePage() {
 
                 <div className="flex items-center gap-2 pt-2 border-t border-gray-50">
                   <button
+                    onClick={() => router.push(`/?doc=${memo.document_id}`)}
+                    className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50 transition-colors font-medium"
+                  >
+                    요약 보기
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  </button>
+                  <button
                     onClick={() => { setEditingMemo(memo.document_id); setEditText(memo.memo_text); }}
                     className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50 transition-colors"
                   >
@@ -248,11 +255,6 @@ export default function PrivatePage() {
                   >
                     삭제
                   </button>
-                  {memo.source_url && !memo.source_url.startsWith("upload://") && (
-                    <a href={memo.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 hover:text-gray-600 hover:underline ml-auto">
-                      원문보기
-                    </a>
-                  )}
                 </div>
               </div>
             ))}
