@@ -25,6 +25,61 @@ function SourceModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // YouTube channel tags
+  const [ytHandles, setYtHandles] = useState<string[]>(() => {
+    if (source?.feed_type === "youtube_channel" && source?.keywords) {
+      return source.keywords.split(",").map((h) => h.trim()).filter(Boolean);
+    }
+    return [];
+  });
+  const [ytInput, setYtInput] = useState("");
+
+  // Test feed
+  const [testing, setTesting] = useState(false);
+  const [testResults, setTestResults] = useState<{ title: string; url: string }[] | null>(null);
+  const [testError, setTestError] = useState("");
+
+  const addYtHandle = () => {
+    const h = ytInput.trim().replace(/^@/, "").replace(/\/videos$/, "");
+    if (h && !ytHandles.includes(h)) {
+      setYtHandles([...ytHandles, h]);
+    }
+    setYtInput("");
+  };
+
+  const removeYtHandle = (handle: string) => {
+    setYtHandles(ytHandles.filter((h) => h !== handle));
+  };
+
+  const handleTestFeed = async () => {
+    setTesting(true);
+    setTestResults(null);
+    setTestError("");
+    try {
+      const params: { feed_type: string; feed_url?: string; keywords?: string; max_items?: number } = {
+        feed_type: feedType,
+        max_items: 5,
+      };
+      if (feedType === "youtube_channel") {
+        params.keywords = ytHandles.join(", ");
+      } else if (feedType === "arxiv") {
+        params.keywords = keywords;
+      } else {
+        params.feed_url = feedUrl;
+      }
+      const res = await api.collectorTestFeed(params);
+      if (res.ok) {
+        setTestResults(res.entries);
+      } else {
+        setTestError(res.error || "테스트 실패");
+      }
+    } catch (err) {
+      setTestError(err instanceof Error ? err.message : "테스트 실패");
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!name.trim()) {
       setError("이름을 입력하세요.");
@@ -34,20 +89,25 @@ function SourceModal({
       setError("검색 키워드를 입력하세요.");
       return;
     }
-    if (feedType !== "arxiv" && !feedUrl.trim()) {
+    if (feedType === "youtube_channel" && ytHandles.length === 0) {
+      setError("채널을 하나 이상 추가하세요.");
+      return;
+    }
+    if (!["arxiv", "youtube_channel"].includes(feedType) && !feedUrl.trim()) {
       setError("RSS URL을 입력하세요.");
       return;
     }
     setSaving(true);
     setError("");
     try {
+      const ytKeywords = feedType === "youtube_channel" ? ytHandles.join(", ") : undefined;
       const payload = {
         name: name.trim(),
-        feed_url: feedType === "arxiv" ? "" : feedUrl.trim(),
+        feed_url: ["arxiv", "youtube_channel"].includes(feedType) ? "" : feedUrl.trim(),
         feed_type: feedType,
         filter_mode: filterMode,
         max_items: maxItems,
-        keywords: feedType === "arxiv" ? keywords.trim() : undefined,
+        keywords: feedType === "arxiv" ? keywords.trim() : ytKeywords,
       };
       if (isEdit) {
         await api.collectorUpdateSource(source.id, payload);
@@ -108,21 +168,51 @@ function SourceModal({
             </select>
           </div>
 
-          {/* Feed URL (RSS only) */}
-          {feedType !== "arxiv" && (
+          {/* Feed URL (RSS types only) */}
+          {!["arxiv", "youtube_channel"].includes(feedType) && (
             <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">
-                {feedType === "youtube_channel" ? "채널 URL" : "RSS URL"}
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">RSS URL</label>
               <input
                 value={feedUrl}
                 onChange={(e) => setFeedUrl(e.target.value)}
-                placeholder={feedType === "youtube_channel" ? "https://www.youtube.com/@채널명/videos" : "https://example.com/rss"}
+                placeholder="https://example.com/rss"
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              {feedType === "youtube_channel" && (
-                <p className="text-[11px] text-gray-400 mt-1">채널 URL 뒤에 /videos를 붙여주세요.</p>
+            </div>
+          )}
+
+          {/* YouTube channel tags */}
+          {feedType === "youtube_channel" && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">YouTube 채널</label>
+              <div className="flex gap-2">
+                <input
+                  value={ytInput}
+                  onChange={(e) => setYtInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addYtHandle(); } }}
+                  placeholder="@채널명 입력 후 Enter"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={addYtHandle}
+                  className="px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                >
+                  추가
+                </button>
+              </div>
+              {/* Tags */}
+              {ytHandles.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {ytHandles.map((h) => (
+                    <span key={h} className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-50 text-red-700 rounded-full text-xs font-medium">
+                      @{h}
+                      <button onClick={() => removeYtHandle(h)} className="text-red-400 hover:text-red-600 ml-0.5">✕</button>
+                    </span>
+                  ))}
+                </div>
               )}
+              <p className="text-[11px] text-gray-400 mt-1.5">예: jocoding, teddynote, zerochotv</p>
             </div>
           )}
 
@@ -180,6 +270,28 @@ function SourceModal({
               onChange={(e) => setMaxItems(Math.max(1, Math.min(50, parseInt(e.target.value) || 10)))}
               className="w-24 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+          </div>
+
+          {/* Test feed button */}
+          <div>
+            <button
+              type="button"
+              onClick={handleTestFeed}
+              disabled={testing}
+              className="text-xs font-medium text-gray-500 hover:text-blue-600 border border-gray-200 px-3 py-1.5 rounded-lg hover:border-blue-300 transition-colors disabled:opacity-50"
+            >
+              {testing ? "테스트 중..." : "피드 테스트"}
+            </button>
+            {testError && <p className="text-xs text-red-500 mt-1">{testError}</p>}
+            {testResults && (
+              <div className="mt-2 bg-gray-50 rounded-lg p-3 max-h-40 overflow-y-auto">
+                <p className="text-[11px] text-gray-400 mb-1">{testResults.length}건 감지</p>
+                {testResults.map((e, i) => (
+                  <p key={i} className="text-xs text-gray-600 truncate">{e.title}</p>
+                ))}
+                {testResults.length === 0 && <p className="text-xs text-gray-400">항목이 없습니다.</p>}
+              </div>
+            )}
           </div>
 
           {error && (
@@ -309,11 +421,19 @@ function SourceCard({
         </button>
       </div>
 
-      {/* URL or Keywords */}
+      {/* URL or Keywords/Channels */}
       {source.feed_type === "arxiv" && source.keywords ? (
         <p className="text-xs text-purple-500 mb-3">
           키워드: {source.keywords}
         </p>
+      ) : source.feed_type === "youtube_channel" && source.keywords ? (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {source.keywords.split(",").map((h) => h.trim()).filter(Boolean).map((h) => (
+            <span key={h} className="inline-flex items-center px-2 py-0.5 bg-red-50 text-red-600 rounded-full text-[10px] font-medium">
+              @{h}
+            </span>
+          ))}
+        </div>
       ) : (
         <p className="text-xs text-gray-400 break-all mb-3">{source.feed_url}</p>
       )}
@@ -471,7 +591,7 @@ export default function CollectorPage() {
         <div>
           <h1 className="text-lg font-bold text-gray-900">뉴스 수집 관리</h1>
           <p className="text-xs text-gray-400 mt-1">
-            매일 09:00, 18:00 (KST) 자동 수집 | {enabledCount}개 소스 활성
+            3시간마다 자동 수집 (KST) | {enabledCount}개 소스 활성
             {lastRun && ` | 마지막 실행: ${lastRun.replace("T", " ")}`}
           </p>
         </div>

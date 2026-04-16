@@ -281,4 +281,7 @@ export const api = {
 
   collectorStatus: () =>
     get<{ last_run: string | null; results: CollectionResultItem[] }>("/collector/status"),
+
+  collectorTestFeed: (params: { feed_type: string; feed_url?: string; keywords?: string; max_items?: number }) =>
+    post<{ ok: boolean; count: number; entries: { title: string; url: string }[]; error?: string }>("/collector/test-feed", params),
 };

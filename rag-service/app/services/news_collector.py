@@ -129,8 +129,8 @@ def _build_arxiv_url(keywords: str, max_items: int) -> str:
     )
 
 
-async def _fetch_youtube_channel(channel_url: str, max_items: int) -> list[FeedEntry]:
-    """yt-dlp로 YouTube 채널의 최근 영상 목록 추출 (RSS 없는 채널용)."""
+async def _fetch_youtube_channel_single(channel_url: str, max_items: int) -> list[FeedEntry]:
+    """yt-dlp로 단일 YouTube 채널의 최근 영상 목록 추출."""
     try:
         from yt_dlp import YoutubeDL
     except ImportError:
@@ -159,11 +159,36 @@ async def _fetch_youtube_channel(channel_url: str, max_items: int) -> list[FeedE
     return entries
 
 
+async def _fetch_youtube_channels(keywords: str | None, feed_url: str, max_items: int) -> list[FeedEntry]:
+    """여러 YouTube 채널에서 영상 목록 추출. keywords에 채널 핸들 목록 (쉼표 구분)."""
+    # keywords가 있으면 채널 핸들 목록, 없으면 feed_url 사용
+    if keywords:
+        handles = [h.strip().lstrip("@") for h in keywords.split(",") if h.strip()]
+        urls = [f"https://www.youtube.com/@{h}/videos" for h in handles]
+    elif feed_url:
+        urls = [feed_url]
+    else:
+        return []
+
+    per_channel = max(1, max_items // len(urls)) if urls else max_items
+    all_entries: list[FeedEntry] = []
+    for url in urls:
+        try:
+            entries = await _fetch_youtube_channel_single(url, per_channel)
+            all_entries.extend(entries)
+            logger.info("YouTube channel fetch: url=%s entries=%d", url, len(entries))
+        except Exception as exc:
+            logger.warning("YouTube channel fetch failed: url=%s error=%s", url, exc)
+        await asyncio.sleep(2)  # rate limit between channels
+
+    return all_entries[:max_items]
+
+
 async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
                               keywords: str | None = None) -> list[FeedEntry]:
-    # YouTube 채널 (yt-dlp 기반, RSS 없는 채널용)
+    # YouTube 채널 (yt-dlp 기반)
     if feed_type == "youtube_channel":
-        return await _fetch_youtube_channel(feed_url, max_items)
+        return await _fetch_youtube_channels(keywords, feed_url, max_items)
 
     # arXiv: keywords로 API URL 생성
     if feed_type == "arxiv":

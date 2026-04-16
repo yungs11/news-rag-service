@@ -777,3 +777,27 @@ async def collector_status():
         last_run=last_run,
         results=[CollectionResultItem(**r.to_dict()) for r in results],
     )
+
+
+class TestFeedRequest(BaseModel):
+    feed_type: str
+    feed_url: str = ""
+    keywords: str | None = None
+    max_items: int = 5
+
+
+@app.post("/collector/test-feed")
+async def collector_test_feed(req: TestFeedRequest):
+    """피드에서 항목만 가져와서 제목 목록 반환 (요약 안 함). 테스트용."""
+    from app.services.news_collector import fetch_feed_entries
+    try:
+        entries = await fetch_feed_entries(
+            req.feed_url, req.feed_type, req.max_items, keywords=req.keywords,
+        )
+        return {
+            "ok": True,
+            "count": len(entries),
+            "entries": [{"title": e.title, "url": e.url} for e in entries],
+        }
+    except Exception as exc:
+        return {"ok": False, "count": 0, "entries": [], "error": f"{exc.__class__.__name__}: {exc}"}
