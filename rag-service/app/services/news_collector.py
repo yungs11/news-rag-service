@@ -35,6 +35,7 @@ class FeedEntry:
     title: str
     url: str
     published: str | None = None
+    source_label: str | None = None  # 개별 채널/출처 이름 (collected_from에 사용)
 
 
 @dataclass
@@ -148,6 +149,9 @@ async def _fetch_youtube_channel_single(channel_url: str, max_items: int) -> lis
             return ydl.extract_info(channel_url, download=False)
 
     info = await asyncio.to_thread(_extract)
+    # 채널 이름 추출
+    channel_name = (info.get("channel") or info.get("uploader") or info.get("title") or "").replace(" - Videos", "").strip()
+
     entries: list[FeedEntry] = []
     for e in (info.get("entries") or [])[:max_items]:
         vid = e.get("id", "")
@@ -155,13 +159,12 @@ async def _fetch_youtube_channel_single(channel_url: str, max_items: int) -> lis
         if not vid or not title:
             continue
         url = f"https://www.youtube.com/watch?v={vid}"
-        entries.append(FeedEntry(title=title.strip(), url=url))
+        entries.append(FeedEntry(title=title.strip(), url=url, source_label=channel_name or None))
     return entries
 
 
 async def _fetch_youtube_channels(keywords: str | None, feed_url: str, max_items: int) -> list[FeedEntry]:
     """여러 YouTube 채널에서 영상 목록 추출. keywords에 채널 핸들 목록 (쉼표 구분)."""
-    # keywords가 있으면 채널 핸들 목록, 없으면 feed_url 사용
     if keywords:
         handles = [h.strip().lstrip("@") for h in keywords.split(",") if h.strip()]
         urls = [f"https://www.youtube.com/@{h}/videos" for h in handles]
@@ -179,7 +182,7 @@ async def _fetch_youtube_channels(keywords: str | None, feed_url: str, max_items
             logger.info("YouTube channel fetch: url=%s entries=%d", url, len(entries))
         except Exception as exc:
             logger.warning("YouTube channel fetch failed: url=%s error=%s", url, exc)
-        await asyncio.sleep(2)  # rate limit between channels
+        await asyncio.sleep(2)
 
     return all_entries[:max_items]
 
@@ -343,7 +346,7 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
                 raw_text=content.content,
                 summary_date=_date.today().isoformat(),
                 user_id=settings.collector_user_id,
-                collected_from=source["name"],
+                collected_from=entry.source_label or source["name"],
             )
 
             if created:
