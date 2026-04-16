@@ -5,6 +5,16 @@ import { api, FeedSource, FilterMode, FeedType, CollectionResultItem } from "@/l
 import { isAdmin } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
+function toKST(utcStr: string | null): string {
+  if (!utcStr) return "";
+  try {
+    const d = new Date(utcStr.endsWith("Z") ? utcStr : utcStr + "Z");
+    return d.toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }).replace(". ", "-").replace(". ", "-").replace(". ", " ");
+  } catch {
+    return utcStr.replace("T", " ").slice(0, 19);
+  }
+}
+
 /* ── Source Add/Edit Modal ── */
 function SourceModal({
   source,
@@ -453,7 +463,7 @@ function SourceCard({
       {/* Last collection */}
       {source.last_collected_at ? (
         <p className="text-xs text-gray-400 mb-4">
-          마지막 수집: {source.last_collected_at.replace("T", " ").slice(0, 19)}
+          마지막 수집: {toKST(source.last_collected_at)}
           {source.last_collected_count !== null && ` (${source.last_collected_count}건)`}
         </p>
       ) : (
@@ -592,7 +602,7 @@ export default function CollectorPage() {
           <h1 className="text-lg font-bold text-gray-900">뉴스 수집 관리</h1>
           <p className="text-xs text-gray-400 mt-1">
             3시간마다 자동 수집 (KST) | {enabledCount}개 소스 활성
-            {lastRun && ` | 마지막 실행: ${lastRun.replace("T", " ")}`}
+            {lastRun && ` | 마지막 실행: ${toKST(lastRun)}`}
           </p>
         </div>
         <button

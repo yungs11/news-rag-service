@@ -5,6 +5,16 @@ import { api, DocumentDetail } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
+function toKST(utcStr: string | null): string {
+  if (!utcStr) return "";
+  try {
+    const d = new Date(utcStr.endsWith("Z") ? utcStr : utcStr + "Z");
+    return d.toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }).replace(". ", "-").replace(". ", "-").replace(". ", " ");
+  } catch {
+    return utcStr.replace("T", " ").slice(0, 19);
+  }
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   "AI/LLM": "bg-violet-100 text-violet-700",
   "Infra": "bg-sky-100 text-sky-700",
@@ -230,7 +240,7 @@ export default function PrivatePage() {
                   <div className="bg-amber-50 rounded-lg px-4 py-3 mb-3">
                     <p className="text-sm text-amber-900">{memo.memo_text}</p>
                     <p className="text-[10px] text-amber-400 mt-1">
-                      {memo.memo_updated_at?.replace("T", " ").slice(0, 19)}
+                      {memo.memo_updated_at ? toKST(memo.memo_updated_at) : ""}
                     </p>
                   </div>
                 )}
