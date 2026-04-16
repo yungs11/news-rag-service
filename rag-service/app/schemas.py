@@ -117,7 +117,7 @@ class SummarizeResponse(BaseModel):
 # ── Feed Source (Collector) ──────────────────────────────────────────────────
 
 FilterMode = Literal["all", "ai_only"]
-FeedType = Literal["rss", "reddit_rss", "arxiv"]
+FeedType = Literal["rss", "reddit_rss", "arxiv", "youtube_channel"]
 
 
 class FeedSourceCreate(BaseModel):

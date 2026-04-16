@@ -39,7 +39,7 @@ export interface CategoryItem {
 }
 
 export type FilterMode = "all" | "ai_only";
-export type FeedType = "rss" | "reddit_rss" | "arxiv";
+export type FeedType = "rss" | "reddit_rss" | "arxiv" | "youtube_channel";
 
 export interface FeedSource {
   id: string;

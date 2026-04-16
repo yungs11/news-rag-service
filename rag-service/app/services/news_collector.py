@@ -129,8 +129,42 @@ def _build_arxiv_url(keywords: str, max_items: int) -> str:
     )
 
 
+async def _fetch_youtube_channel(channel_url: str, max_items: int) -> list[FeedEntry]:
+    """yt-dlp로 YouTube 채널의 최근 영상 목록 추출 (RSS 없는 채널용)."""
+    try:
+        from yt_dlp import YoutubeDL
+    except ImportError:
+        raise ValueError("yt-dlp is not installed")
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "playlistend": max_items,
+    }
+
+    def _extract():
+        with YoutubeDL(opts) as ydl:
+            return ydl.extract_info(channel_url, download=False)
+
+    info = await asyncio.to_thread(_extract)
+    entries: list[FeedEntry] = []
+    for e in (info.get("entries") or [])[:max_items]:
+        vid = e.get("id", "")
+        title = e.get("title", "")
+        if not vid or not title:
+            continue
+        url = f"https://www.youtube.com/watch?v={vid}"
+        entries.append(FeedEntry(title=title.strip(), url=url))
+    return entries
+
+
 async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
                               keywords: str | None = None) -> list[FeedEntry]:
+    # YouTube 채널 (yt-dlp 기반, RSS 없는 채널용)
+    if feed_type == "youtube_channel":
+        return await _fetch_youtube_channel(feed_url, max_items)
+
     # arXiv: keywords로 API URL 생성
     if feed_type == "arxiv":
         if not keywords:
@@ -300,7 +334,7 @@ async def collect_source(source: dict, settings, rag) -> CollectionResult:
             logger.warning("Collector: entry failed url=%s error=%s", entry.url, exc)
 
         # Rate limiting (arXiv은 3초 권장)
-        delay = 3.0 if source.get("feed_type") == "arxiv" else 1.5
+        delay = 3.0 if source.get("feed_type") in ("arxiv", "youtube_channel") else 1.5
         await asyncio.sleep(delay)
 
     return result

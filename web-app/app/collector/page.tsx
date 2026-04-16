@@ -104,19 +104,25 @@ function SourceModal({
               <option value="rss">RSS / Atom</option>
               <option value="reddit_rss">Reddit RSS</option>
               <option value="arxiv">arXiv 논문</option>
+              <option value="youtube_channel">YouTube 채널</option>
             </select>
           </div>
 
           {/* Feed URL (RSS only) */}
           {feedType !== "arxiv" && (
             <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">RSS URL</label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                {feedType === "youtube_channel" ? "채널 URL" : "RSS URL"}
+              </label>
               <input
                 value={feedUrl}
                 onChange={(e) => setFeedUrl(e.target.value)}
-                placeholder="https://example.com/rss"
+                placeholder={feedType === "youtube_channel" ? "https://www.youtube.com/@채널명/videos" : "https://example.com/rss"}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+              {feedType === "youtube_channel" && (
+                <p className="text-[11px] text-gray-400 mt-1">채널 URL 뒤에 /videos를 붙여주세요.</p>
+              )}
             </div>
           )}
 
@@ -320,7 +326,7 @@ function SourceCard({
           {source.feed_type === "arxiv" ? "arXiv 논문" : filterLabel}
         </span>
         <span className="text-xs text-gray-400">
-          {source.feed_type === "arxiv" ? "arXiv" : source.feed_type === "reddit_rss" ? "Reddit" : "RSS"} | 최대 {source.max_items}건
+          {source.feed_type === "arxiv" ? "arXiv" : source.feed_type === "youtube_channel" ? "YouTube" : source.feed_type === "reddit_rss" ? "Reddit" : "RSS"} | 최대 {source.max_items}건
         </span>
       </div>
 
