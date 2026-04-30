@@ -5,13 +5,16 @@ import { api, FeedSource, FilterMode, FeedType, CollectionResultItem } from "@/l
 import { isAdmin } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
-function toKST(utcStr: string | null): string {
-  if (!utcStr) return "";
+function toKST(dateStr: string | null): string {
+  if (!dateStr) return "";
   try {
-    const d = new Date(utcStr.endsWith("Z") ? utcStr : utcStr + "Z");
-    return d.toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }).replace(". ", "-").replace(". ", "-").replace(". ", " ");
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr.replace("T", " ").slice(0, 19);
+    const kst = new Date(d.getTime() + (d.getTimezoneOffset() + 540) * 60000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${kst.getFullYear()}-${pad(kst.getMonth() + 1)}-${pad(kst.getDate())} ${pad(kst.getHours())}:${pad(kst.getMinutes())}:${pad(kst.getSeconds())}`;
   } catch {
-    return utcStr.replace("T", " ").slice(0, 19);
+    return dateStr.replace("T", " ").slice(0, 19);
   }
 }
 
@@ -539,7 +542,14 @@ export default function CollectorPage() {
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [summaryModel, setSummaryModel] = useState("");
   const [ragModel, setRagModel] = useState("");
+  const [summaryBaseUrl, setSummaryBaseUrl] = useState("");
+  const [ragBaseUrl, setRagBaseUrl] = useState("");
+  const [summaryApiKey, setSummaryApiKey] = useState("");
+  const [ragApiKey, setRagApiKey] = useState("");
   const [modelSaving, setModelSaving] = useState(false);
+  const [modelTestResult, setModelTestResult] = useState<{ type: string; ok: boolean; model: string; response?: string; error?: string } | null>(null);
+  const [modelTesting, setModelTesting] = useState<string | null>(null);
+  const [collectionLogs, setCollectionLogs] = useState<{ timestamp: string; sources: { source_name: string; total_entries: number; filtered: number; collected: number; failed: number; errors: string[] }[] }[]>([]);
   const [error, setError] = useState("");
 
   const loadSources = useCallback(async () => {
@@ -568,24 +578,46 @@ export default function CollectorPage() {
     loadSources();
     loadStatus();
     // Load model settings
-    api.modelSettings().then((m) => { setSummaryModel(m.summary_model); setRagModel(m.rag_model); }).catch(() => {});
+    api.modelSettings().then((m: Record<string, string>) => { setSummaryModel(m.summary_model); setRagModel(m.rag_model); setSummaryBaseUrl(m.summary_base_url || ""); setRagBaseUrl(m.rag_base_url || ""); setSummaryApiKey(m.summary_api_key || ""); setRagApiKey(m.rag_api_key || ""); }).catch(() => {});
+    // Load collection logs
+    api.collectorLogs().then((r) => setCollectionLogs(r.logs)).catch(() => {});
     // Load retention settings
     api.retentionSettings().then((r) => { setRetDays(r.days); setRetEnabled(r.enabled); }).catch(() => {});
     api.retentionHistory().then((r) => setCleanupHistory(r.history)).catch(() => {});
   }, [loadSources, loadStatus, router]);
 
+  // 백그라운드 수집 완료까지 폴링 (5초 간격, 최대 5분)
+  const pollUntilDone = useCallback((prevLogCount: number) => {
+    let attempts = 0;
+    const maxAttempts = 60; // 5초 × 60 = 5분
+    const poll = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await api.collectorLogs();
+        setCollectionLogs(res.logs);
+        if (res.logs.length > prevLogCount || attempts >= maxAttempts) {
+          clearInterval(poll);
+          setRunningAll(false);
+          setRunningId(null);
+          loadSources();
+          loadStatus();
+        }
+      } catch {
+        // ignore
+      }
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [loadSources, loadStatus]);
+
   const handleRunAll = async () => {
-    if (!confirm("모든 활성 소스에서 뉴스를 수집합니다. 시간이 다소 걸릴 수 있습니다.")) return;
+    if (!confirm("모든 활성 소스에서 뉴스를 수집합니다. 백그라운드에서 실행됩니다.")) return;
     setRunningAll(true);
     setError("");
     try {
-      const res = await api.collectorRunAll();
-      setResultItems(res.results);
-      loadSources();
-      loadStatus();
+      await api.collectorRunAll();
+      pollUntilDone(collectionLogs.length);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "수집 실패");
-    } finally {
+      setError(err instanceof Error ? err.message : "수집 요청 실패");
       setRunningAll(false);
     }
   };
@@ -594,13 +626,10 @@ export default function CollectorPage() {
     setRunningId(source.id);
     setError("");
     try {
-      const res = await api.collectorRunSource(source.id);
-      setResultItems(res.results);
-      loadSources();
-      loadStatus();
+      await api.collectorRunSource(source.id);
+      pollUntilDone(collectionLogs.length);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "수집 실패");
-    } finally {
+      setError(err instanceof Error ? err.message : "수집 요청 실패");
       setRunningId(null);
     }
   };
@@ -687,38 +716,118 @@ export default function CollectorPage() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <h3 className="text-sm font-bold text-gray-900 mb-4">LLM 모델 설정</h3>
         <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1">요약 모델 (수집/URL 요약)</label>
-            <input
-              value={summaryModel}
-              onChange={(e) => setSummaryModel(e.target.value)}
-              placeholder="google/gemma-4-31b-it:free"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">요약 모델</label>
+              <input
+                value={summaryModel}
+                onChange={(e) => setSummaryModel(e.target.value)}
+                placeholder="google/gemma-4-31b-it:free"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">요약 엔드포인트 URL</label>
+              <input
+                value={summaryBaseUrl}
+                onChange={(e) => setSummaryBaseUrl(e.target.value)}
+                placeholder="https://openrouter.ai/api/v1 (기본값)"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
           </div>
           <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1">RAG 대화 모델</label>
+            <label className="block text-xs font-semibold text-gray-500 mb-1">요약 API Key</label>
             <input
-              value={ragModel}
-              onChange={(e) => setRagModel(e.target.value)}
-              placeholder="anthropic/claude-opus-4.6"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              type="password"
+              value={summaryApiKey}
+              onChange={(e) => setSummaryApiKey(e.target.value)}
+              placeholder="비워두면 기본 OpenRouter 키 사용"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <button
-            onClick={async () => {
-              if (!summaryModel.trim() || !ragModel.trim()) return;
-              setModelSaving(true);
-              try {
-                await api.modelUpdate(summaryModel.trim(), ragModel.trim());
-              } catch { /* ignore */ }
-              setModelSaving(false);
-            }}
-            disabled={modelSaving}
-            className="text-xs font-medium text-blue-600 hover:text-blue-800 px-4 py-2 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
-          >
-            {modelSaving ? "저장 중..." : "모델 저장"}
-          </button>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">RAG 대화 모델</label>
+              <input
+                value={ragModel}
+                onChange={(e) => setRagModel(e.target.value)}
+                placeholder="anthropic/claude-opus-4.6"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">RAG 엔드포인트 URL</label>
+              <input
+                value={ragBaseUrl}
+                onChange={(e) => setRagBaseUrl(e.target.value)}
+                placeholder="https://openrouter.ai/api/v1 (기본값)"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1">RAG API Key</label>
+            <input
+              type="password"
+              value={ragApiKey}
+              onChange={(e) => setRagApiKey(e.target.value)}
+              placeholder="비워두면 기본 OpenRouter 키 사용"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={async () => {
+                if (!summaryModel.trim() || !ragModel.trim()) return;
+                setModelSaving(true);
+                try {
+                  await api.modelUpdate(summaryModel.trim(), ragModel.trim(), summaryBaseUrl.trim(), ragBaseUrl.trim(), summaryApiKey, ragApiKey);
+                } catch { /* ignore */ }
+                setModelSaving(false);
+              }}
+              disabled={modelSaving}
+              className="text-xs font-medium text-blue-600 hover:text-blue-800 px-4 py-2 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
+            >
+              {modelSaving ? "저장 중..." : "모델 저장"}
+            </button>
+            <button
+              onClick={async () => {
+                setModelTesting("summary"); setModelTestResult(null);
+                try {
+                  const r = await api.modelTest("summary");
+                  setModelTestResult({ type: "요약", ...r });
+                } catch (e) { setModelTestResult({ type: "요약", ok: false, model: summaryModel, error: String(e) }); }
+                setModelTesting(null);
+              }}
+              disabled={modelTesting !== null}
+              className="text-xs font-medium text-emerald-600 hover:text-emerald-800 px-3 py-2 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors disabled:opacity-50"
+            >
+              {modelTesting === "summary" ? "테스트 중..." : "요약 모델 테스트"}
+            </button>
+            <button
+              onClick={async () => {
+                setModelTesting("rag"); setModelTestResult(null);
+                try {
+                  const r = await api.modelTest("rag");
+                  setModelTestResult({ type: "RAG", ...r });
+                } catch (e) { setModelTestResult({ type: "RAG", ok: false, model: ragModel, error: String(e) }); }
+                setModelTesting(null);
+              }}
+              disabled={modelTesting !== null}
+              className="text-xs font-medium text-emerald-600 hover:text-emerald-800 px-3 py-2 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors disabled:opacity-50"
+            >
+              {modelTesting === "rag" ? "테스트 중..." : "RAG 모델 테스트"}
+            </button>
+          </div>
+          {modelTestResult && (
+            <div className={`text-xs rounded-lg px-3 py-2 ${modelTestResult.ok ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-700"}`}>
+              <span className="font-semibold">[{modelTestResult.type}] {modelTestResult.model}</span>
+              {modelTestResult.ok
+                ? <p className="mt-1">{modelTestResult.response}</p>
+                : <p className="mt-1">{modelTestResult.error}</p>}
+            </div>
+          )}
           <p className="text-[10px] text-gray-400">저장 즉시 적용됩니다. 서버 재시작 불필요.</p>
         </div>
       </div>
@@ -834,6 +943,58 @@ export default function CollectorPage() {
               onToggle={() => handleToggle(source)}
             />
           ))}
+        </div>
+      )}
+
+      {/* Collection Logs */}
+      {collectionLogs.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-gray-900">수집 로그</h3>
+            <button
+              onClick={() => api.collectorLogs().then((r) => setCollectionLogs(r.logs)).catch(() => {})}
+              className="text-[10px] text-gray-400 hover:text-blue-500 transition-colors"
+            >
+              새로고침
+            </button>
+          </div>
+          <div className="space-y-3 max-h-[400px] overflow-y-auto">
+            {[...collectionLogs].reverse().map((log, li) => {
+              const totalCollected = log.sources.reduce((s, r) => s + r.collected, 0);
+              const totalFailed = log.sources.reduce((s, r) => s + r.failed, 0);
+              const hasErrors = log.sources.some((r) => r.errors.length > 0);
+              return (
+                <details key={li} className={`rounded-lg border ${hasErrors ? "border-red-100" : "border-gray-100"}`}>
+                  <summary className={`px-3 py-2 cursor-pointer text-xs flex items-center gap-2 ${hasErrors ? "bg-red-50" : "bg-gray-50"} rounded-t-lg`}>
+                    <span className="text-gray-500">{toKST(log.timestamp)}</span>
+                    <span className="font-semibold text-blue-600">수집 {totalCollected}</span>
+                    {totalFailed > 0 && <span className="font-semibold text-red-500">실패 {totalFailed}</span>}
+                    <span className="text-gray-400">{log.sources.length}개 소스</span>
+                  </summary>
+                  <div className="px-3 py-2 space-y-1.5">
+                    {log.sources.map((src, si) => (
+                      <div key={si} className="text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-1.5 h-1.5 rounded-full ${src.collected > 0 ? "bg-green-400" : src.failed > 0 ? "bg-red-400" : "bg-gray-300"}`} />
+                          <span className="font-medium text-gray-700">{src.source_name}</span>
+                          <span className="text-gray-400">총 {src.total_entries} → 필터 {src.filtered} → 수집 {src.collected}</span>
+                          {src.failed > 0 && <span className="text-red-500">실패 {src.failed}</span>}
+                        </div>
+                        {src.errors.length > 0 && (
+                          <div className="ml-3.5 mt-0.5 space-y-0.5">
+                            {src.errors.slice(0, 3).map((err, ei) => (
+                              <p key={ei} className="text-[10px] text-red-400 break-all">{err.slice(0, 150)}</p>
+                            ))}
+                            {src.errors.length > 3 && <p className="text-[10px] text-red-300">...외 {src.errors.length - 3}건</p>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
         </div>
       )}
 

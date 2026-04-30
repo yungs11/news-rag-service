@@ -155,7 +155,8 @@ function ChatPageInner() {
 
     const userMsg: Message = { role: "user", content: q };
     const nextMessages = [...messages, userMsg];
-    setMessages(nextMessages);
+    const aiPlaceholder: Message = { role: "assistant", content: "" };
+    setMessages([...nextMessages, aiPlaceholder]);
     setLoading(true);
 
     let sessionId = currentSessionId;
@@ -167,32 +168,76 @@ function ChatPageInner() {
     }
 
     try {
-      // 현재 세션의 이전 메시지를 history로 전달 (멀티턴)
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
       const historyParam = history.length > 0 ? history : undefined;
-      const result = attachedFile
-        ? await api.askWithFile(q, attachedFile, 6, category, docId, historyParam)
-        : await api.ask(q, 6, category, docId, historyParam);
-      setAttachedFile(null);
-      const uniqueDocs = result.hits
-        ? Array.from(new Map(result.hits.map(h => [h.document_id, { document_id: h.document_id, title: h.title, source_url: h.source_url }])).values())
-        : [];
-      const aiMsg: Message = {
-        role: "assistant",
-        content: result.answer,
-        sources: result.sources,
-        source_docs: uniqueDocs,
-      };
-      const finalMessages = [...nextMessages, aiMsg];
-      setMessages(finalMessages);
-      await appendMessages(sessionId, [userMsg, aiMsg]);
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === sessionId
-            ? { ...s, message_count: finalMessages.length, updated_at: new Date().toISOString() }
-            : s
-        )
-      );
+
+      if (attachedFile) {
+        const result = await api.askWithFile(q, attachedFile, 6, category, docId, historyParam);
+        const uniqueDocs = result.hits
+          ? Array.from(new Map(result.hits.map(h => [h.document_id, { document_id: h.document_id, title: h.title, source_url: h.source_url }])).values())
+          : [];
+        const aiMsg: Message = {
+          role: "assistant",
+          content: result.answer,
+          sources: result.sources,
+          source_docs: uniqueDocs,
+        };
+        const finalMessages = [...nextMessages, aiMsg];
+        setMessages(finalMessages);
+        await appendMessages(sessionId, [userMsg, aiMsg]);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, message_count: finalMessages.length, updated_at: new Date().toISOString() }
+              : s
+          )
+        );
+      } else {
+        let streamed = "";
+        let sources: string[] = [];
+        let sourceDocs: { document_id: string; title: string; source_url: string }[] = [];
+
+        await new Promise<void>((resolve, reject) => {
+          api.askStream(q, 6, category, docId, historyParam, {
+            onHits: (d) => {
+              sources = d.sources;
+              sourceDocs = d.source_docs;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy.length - 1;
+                if (copy[last]?.role === "assistant") {
+                  copy[last] = { ...copy[last], sources, source_docs: sourceDocs };
+                }
+                return copy;
+              });
+            },
+            onDelta: (text) => {
+              streamed += text;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy.length - 1;
+                if (copy[last]?.role === "assistant") {
+                  copy[last] = { ...copy[last], content: streamed };
+                }
+                return copy;
+              });
+            },
+            onDone: () => resolve(),
+            onError: (err) => reject(new Error(err)),
+          });
+        });
+
+        const aiMsg: Message = { role: "assistant", content: streamed, sources, source_docs: sourceDocs };
+        const finalMessages = [...nextMessages, aiMsg];
+        await appendMessages(sessionId, [userMsg, aiMsg]);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, message_count: finalMessages.length, updated_at: new Date().toISOString() }
+              : s
+          )
+        );
+      }
     } catch {
       const errMsg: Message = {
         role: "assistant",
@@ -201,6 +246,7 @@ function ChatPageInner() {
       setMessages([...nextMessages, errMsg]);
       await appendMessages(sessionId, [userMsg, errMsg]);
     } finally {
+      setAttachedFile(null);
       setLoading(false);
     }
   };
@@ -426,6 +472,12 @@ function ChatPageInner() {
               >
                 {msg.role === "user" ? (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
+                ) : msg.content === "" ? (
+                  <div className="flex gap-1 items-center h-5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:0ms]"></span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:150ms]"></span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:300ms]"></span>
+                  </div>
                 ) : (
                   <div className="chat-markdown max-w-none break-words text-sm leading-relaxed text-gray-800">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -463,18 +515,6 @@ function ChatPageInner() {
             </div>
           ))}
 
-          {loading && (
-            <div className="flex justify-start">
-              <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs mr-2 shrink-0">AI</div>
-              <div className="bg-gray-50 border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3">
-                <div className="flex gap-1 items-center h-5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:0ms]"></span>
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:150ms]"></span>
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:300ms]"></span>
-                </div>
-              </div>
-            </div>
-          )}
           <div ref={bottomRef} />
         </div>
 

@@ -28,6 +28,7 @@ class SearchRequest(BaseModel):
     query: str
     limit: int = Field(default=5, ge=1, le=20)
     category: Category | None = None
+    source: str | None = None  # collected_from 기준, "__manual__" = 수동 등록
     user_id: str | None = None
 
 
@@ -98,6 +99,15 @@ class CategoriesResponse(BaseModel):
     items: list[CategoryItem]
 
 
+class SourceItem(BaseModel):
+    source: str  # collected_from 값, null은 "__manual__" sentinel
+    document_count: int
+
+
+class SourcesResponse(BaseModel):
+    items: list[SourceItem]
+
+
 class SummarizeRequest(BaseModel):
     url: str
     user_id: str | None = None
@@ -117,7 +127,7 @@ class SummarizeResponse(BaseModel):
 # ── Feed Source (Collector) ──────────────────────────────────────────────────
 
 FilterMode = Literal["all", "ai_only"]
-FeedType = Literal["rss", "reddit_rss", "arxiv", "youtube_channel", "arca_live"]
+FeedType = Literal["rss", "reddit_rss", "arxiv", "youtube_channel", "arca_live", "sitemap"]
 
 
 class FeedSourceCreate(BaseModel):
@@ -168,6 +178,7 @@ class CollectionResultItem(BaseModel):
     filtered: int
     collected: int
     skipped_duplicate: int
+    skipped_tombstoned: int = 0
     failed: int
     errors: list[str]
     skipped_no_date: list[dict] = []

@@ -5,13 +5,16 @@ import { api, DocumentDetail } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
-function toKST(utcStr: string | null): string {
-  if (!utcStr) return "";
+function toKST(dateStr: string | null): string {
+  if (!dateStr) return "";
   try {
-    const d = new Date(utcStr.endsWith("Z") ? utcStr : utcStr + "Z");
-    return d.toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }).replace(". ", "-").replace(". ", "-").replace(". ", " ");
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr.replace("T", " ").slice(0, 19);
+    const kst = new Date(d.getTime() + (d.getTimezoneOffset() + 540) * 60000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${kst.getFullYear()}-${pad(kst.getMonth() + 1)}-${pad(kst.getDate())} ${pad(kst.getHours())}:${pad(kst.getMinutes())}:${pad(kst.getSeconds())}`;
   } catch {
-    return utcStr.replace("T", " ").slice(0, 19);
+    return dateStr.replace("T", " ").slice(0, 19);
   }
 }
 

@@ -43,6 +43,7 @@ class CollectionResult:
     filtered: int = 0
     collected: int = 0
     skipped_duplicate: int = 0
+    skipped_tombstoned: int = 0
     failed: int = 0
     errors: list[str] = field(default_factory=list)
     skipped_no_date: list[dict] = field(default_factory=list)
@@ -55,6 +56,7 @@ class CollectionResult:
             "filtered": self.filtered,
             "collected": self.collected,
             "skipped_duplicate": self.skipped_duplicate,
+            "skipped_tombstoned": self.skipped_tombstoned,
             "failed": self.failed,
             "errors": self.errors,
             "skipped_no_date": self.skipped_no_date,
@@ -238,8 +240,33 @@ def _fetch_arca_entries(board_url: str, max_items: int) -> list[FeedEntry]:
     return entries
 
 
+def _fetch_sitemap_entries(sitemap_url: str, path_filter: str, max_items: int) -> list[FeedEntry]:
+    """Sitemap XML에서 특정 경로 패턴의 URL을 추출한다."""
+    import re as _re
+    resp = httpx.get(sitemap_url, headers={"User-Agent": _BROWSER_UA}, timeout=15, follow_redirects=True)
+    resp.raise_for_status()
+    pattern = _re.escape(path_filter) if path_filter else ""
+    urls = _re.findall(r"<loc>(" + pattern + r"[^<]+)</loc>", resp.text)
+    # 목록 페이지 제외 (정확히 /blog, /blog/ 등)
+    urls = [u for u in urls if u.rstrip("/") != path_filter.rstrip("/")]
+    # 최신 순서를 보장할 수 없으므로 역순 (sitemap은 보통 최신이 뒤에)
+    urls = list(reversed(urls))
+    entries: list[FeedEntry] = []
+    for url in urls[:max_items]:
+        # URL에서 slug 추출하여 제목으로 사용
+        slug = url.rstrip("/").split("/")[-1]
+        title = slug.replace("-", " ").title()
+        entries.append(FeedEntry(title=title, url=url, published=None))
+    return entries
+
+
 async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
                               keywords: str | None = None) -> list[FeedEntry]:
+    # Sitemap 기반 (RSS 없는 블로그)
+    if feed_type == "sitemap":
+        path_filter = keywords or ""  # keywords 필드에 URL 경로 패턴 저장
+        return await asyncio.to_thread(_fetch_sitemap_entries, feed_url, path_filter, max_items)
+
     # arca.live 게시판 (cloudscraper 기반)
     if feed_type == "arca_live":
         return await asyncio.to_thread(_fetch_arca_entries, feed_url, max_items)
@@ -323,7 +350,7 @@ async def fetch_feed_entries(feed_url: str, feed_type: str, max_items: int,
     return entries
 
 
-async def collect_source(source: dict, settings, rag, summary_model: str | None = None) -> CollectionResult:
+async def collect_source(source: dict, settings, rag, summary_model: str | None = None, summary_base_url: str | None = None, summary_api_key: str | None = None) -> CollectionResult:
     result = CollectionResult(
         source_name=source["name"],
         source_id=source["id"],
@@ -345,23 +372,9 @@ async def collect_source(source: dict, settings, rag, summary_model: str | None 
     result.total_entries = len(entries)
     logger.info("Collector: fetched %d entries from %s", len(entries), source["name"])
 
-    # 2a. Filter by published date (skip entries older than last collection)
-    last_collected = _parse_last_collected(source.get("last_collected_at"))
-    if last_collected:
-        before_count = len(entries)
-        new_entries = []
-        for e in entries:
-            pub_dt = _parse_published(e.published)
-            if pub_dt is None:
-                result.skipped_no_date.append({"title": e.title, "url": e.url})
-                logger.warning("Collector: skipping entry without date: %s", e.title[:60])
-                continue
-            if pub_dt > last_collected:
-                new_entries.append(e)
-        entries = new_entries
-        skipped_old = before_count - len(entries)
-        if skipped_old > 0:
-            logger.info("Collector: skipped %d old entries (before %s) from %s", skipped_old, last_collected.isoformat(), source["name"])
+    # Published-date 필터는 의도적으로 제거됨: FeedBurner 등 CDN 캐시 지연으로
+    # 뒤늦게 피드에 노출되는 글이 last_collected_at 이후로 영구 스킵되는 문제가 있음.
+    # 중복 방지는 아래 collect loop 내 is_url_already_ingested()가 담당.
 
     # 2b. Filter by mode (ai_only / all)
     filter_mode = source.get("filter_mode", "all")
@@ -371,13 +384,21 @@ async def collect_source(source: dict, settings, rag, summary_model: str | None 
     logger.info("Collector: %d entries after filter (%s) from %s", len(entries), filter_mode, source["name"])
 
     # 3. Process each entry
+    retention_tombstone_days = getattr(settings, "retention_tombstone_days", 30)
     for entry in entries:
         try:
-            # Check duplicate in DB first (faster than full pipeline)
-            already = await rag.store.is_url_already_ingested(entry.url)
-            if already:
-                result.skipped_duplicate += 1
-                logger.debug("Collector: skip duplicate url=%s", entry.url)
+            # Check duplicate OR tombstone in DB first (faster than full pipeline)
+            skip, reason = await rag.store.should_skip_for_collection(
+                entry.url, retention_tombstone_days=retention_tombstone_days
+            )
+            if skip:
+                if reason in ("user_delete", "retention_expiry"):
+                    result.skipped_tombstoned += 1
+                    logger.info("Collector: skip tombstoned url=%s reason=%s", entry.url, reason)
+                else:
+                    # reason == "live" 또는 레거시
+                    result.skipped_duplicate += 1
+                    logger.debug("Collector: skip duplicate url=%s reason=%s", entry.url, reason)
                 continue
 
             # Extract content
@@ -402,8 +423,8 @@ async def collect_source(source: dict, settings, rag, summary_model: str | None 
             category = await classify_category(
                 content.title,
                 content.content[:800],
-                api_key=settings.openrouter_api_key,
-                base_url=settings.openrouter_base_url,
+                api_key=summary_api_key or settings.openrouter_api_key,
+                base_url=summary_base_url or settings.openrouter_base_url,
                 model=summary_model or settings.openrouter_summary_model,
             )
 
@@ -411,8 +432,8 @@ async def collect_source(source: dict, settings, rag, summary_model: str | None 
             summary = await summarize_content(
                 content,
                 category=category,
-                api_key=settings.openrouter_api_key,
-                base_url=settings.openrouter_base_url,
+                api_key=summary_api_key or settings.openrouter_api_key,
+                base_url=summary_base_url or settings.openrouter_base_url,
                 model=summary_model or settings.openrouter_summary_model,
                 system_prompt=settings.summary_system_prompt,
                 user_prompt_template=settings.summary_user_prompt_template,
@@ -456,7 +477,7 @@ async def collect_source(source: dict, settings, rag, summary_model: str | None 
     return result
 
 
-async def run_all_sources(settings, store, rag, summary_model: str | None = None) -> list[CollectionResult]:
+async def run_all_sources(settings, store, rag, summary_model: str | None = None, summary_base_url: str | None = None, summary_api_key: str | None = None) -> list[CollectionResult]:
     sources = await store.list_feed_sources()
     enabled = [s for s in sources if s.get("enabled")]
 
@@ -464,11 +485,13 @@ async def run_all_sources(settings, store, rag, summary_model: str | None = None
         logger.info("Collector: no enabled sources, skipping")
         return []
 
-    # 동적 모델 조회
+    # 동적 모델/엔드포인트 조회
     if not summary_model:
         mc = await store.get_model_config()
         if mc:
             summary_model = mc["summary_model"]
+            summary_base_url = mc.get("summary_base_url") or None
+            summary_api_key = mc.get("summary_api_key") or None
 
     logger.info("Collector: starting collection cycle, %d enabled sources, model=%s", len(enabled), summary_model or "default")
     t_start = time.perf_counter()
@@ -476,11 +499,12 @@ async def run_all_sources(settings, store, rag, summary_model: str | None = None
     results: list[CollectionResult] = []
     for source in enabled:
         try:
-            result = await collect_source(source, settings, rag, summary_model=summary_model)
+            result = await collect_source(source, settings, rag, summary_model=summary_model, summary_base_url=summary_base_url, summary_api_key=summary_api_key)
             results.append(result)
 
-            # Update source status in DB
-            await store.update_source_collection_status(source["id"], result.collected)
+            # Update source status in DB (수집 성공 시에만 timestamp 갱신)
+            if result.collected > 0:
+                await store.update_source_collection_status(source["id"], result.collected)
 
         except Exception as exc:
             logger.exception("Collector: source failed name=%s", source["name"])
@@ -533,6 +557,13 @@ DEFAULT_SOURCES = [
         "feed_type": "reddit_rss",
         "filter_mode": "ai_only",
         "max_items": 10,
+    },
+    {
+        "name": "Reddit LocalLLaMA",
+        "feed_url": "https://www.reddit.com/r/LocalLLaMA/.rss",
+        "feed_type": "reddit_rss",
+        "filter_mode": "all",
+        "max_items": 15,
     },
     {
         "name": "Reddit AI_Agents",

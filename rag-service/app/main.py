@@ -4,9 +4,9 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.config import Settings
@@ -30,6 +30,8 @@ from app.schemas import (
     SearchItem,
     SearchRequest,
     SearchResponse,
+    SourceItem,
+    SourcesResponse,
     SummarizeRequest,
     SummarizeResponse,
 )
@@ -71,14 +73,26 @@ embedder = Embedder(settings.embedding_model)
 rag = RagService(settings, store, embedder)
 
 
-async def _get_summary_model() -> str:
+async def _get_summary_config() -> tuple[str, str, str]:
+    """(model, base_url, api_key) 반환."""
     mc = await store.get_model_config()
-    return mc["summary_model"] if mc else settings.openrouter_summary_model
+    if mc:
+        model = mc["summary_model"]
+        base_url = mc["summary_base_url"] or settings.openrouter_base_url
+        api_key = mc["summary_api_key"] or settings.openrouter_api_key
+        return model, base_url, api_key
+    return settings.openrouter_summary_model, settings.openrouter_base_url, settings.openrouter_api_key
 
 
-async def _get_rag_model() -> str:
+async def _get_rag_config() -> tuple[str, str, str]:
+    """(model, base_url, api_key) 반환."""
     mc = await store.get_model_config()
-    return mc["rag_model"] if mc else settings.openrouter_rag_model
+    if mc:
+        model = mc["rag_model"]
+        base_url = mc["rag_base_url"] or settings.openrouter_base_url
+        api_key = mc["rag_api_key"] or settings.openrouter_api_key
+        return model, base_url, api_key
+    return settings.openrouter_rag_model, settings.openrouter_base_url, settings.openrouter_api_key
 
 
 async def _scheduled_collection():
@@ -100,9 +114,23 @@ async def _scheduled_cleanup():
     protected = await store.get_protected_source_names()
     active_ids = await get_doc_ids_with_sessions()
     expired_ids = await store.find_expired_documents(days, protected, active_ids)
-    deleted = await store.bulk_delete_documents(expired_ids)
+    # tombstone=True + reason="retention_expiry": retention_tombstone_days(기본 30일) 동안
+    # 재수집을 차단해 같은 URL이 피드에 오래 머물 때 반복 재수집되는 것을 방지.
+    # TTL이 지나면 다시 수집 허용 → 진짜로 업데이트된 콘텐츠는 재수집 가능.
+    deleted = await store.bulk_delete_documents(
+        expired_ids, tombstone=True, reason="retention_expiry"
+    )
     sched.add_cleanup_result(deleted=deleted, protected=len(protected), active=len(active_ids))
     logger.info("Cleanup done: deleted=%d protected_sources=%d active_docs=%d", deleted, len(protected), len(active_ids))
+
+
+async def _scheduled_tombstone_sweep():
+    """연 1회 Cron: 모든 DeletedDocument tombstone 일괄 삭제."""
+    if not settings.tombstone_sweep_enabled:
+        logger.info("Tombstone sweep skipped: disabled via settings")
+        return
+    deleted = await store.sweep_tombstones()
+    logger.info("Tombstone sweep done: deleted=%d", deleted)
 
 
 @asynccontextmanager
@@ -130,6 +158,8 @@ async def lifespan(app: FastAPI):
     if settings.collector_enabled:
         sched.setup_scheduler(settings.collector_cron_hours, _scheduled_collection)
     sched.setup_cleanup_job(_scheduled_cleanup, start_date="2026-04-23T03:00:00")
+    if settings.tombstone_sweep_enabled:
+        sched.setup_tombstone_sweep_job(_scheduled_tombstone_sweep)
     sched.start()
 
     yield
@@ -232,7 +262,7 @@ async def ingest(req: IngestRequest):
 
 @app.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest):
-    hits = await rag.search(req.query, req.limit, req.category, user_id=req.user_id)
+    hits = await rag.search(req.query, req.limit, req.category, user_id=req.user_id, source=req.source)
     items = [_to_search_item(h) for h in hits]
     return SearchResponse(query=req.query, count=len(items), items=items)
 
@@ -249,6 +279,43 @@ async def ask(req: AskRequest):
         answer=result["answer"],
         sources=result["sources"],
         hits=hits,
+    )
+
+
+@app.post("/ask/stream")
+async def ask_stream_endpoint(req: AskRequest):
+    import json as _json
+
+    await rag.refresh_model()
+    history = [{"role": h.role, "content": h.content} for h in req.history] if req.history else None
+
+    async def event_gen():
+        try:
+            async for event_type, payload in rag.ask_stream(
+                req.query, req.limit, req.category,
+                user_id=req.user_id, document_id=req.document_id, history=history,
+            ):
+                if event_type == "hits":
+                    serialized = {
+                        "sources": payload["sources"],
+                        "source_docs": payload["source_docs"],
+                        "hits": [_to_search_item(h).model_dump() for h in payload["hits"]],
+                    }
+                    yield f"event: hits\ndata: {_json.dumps(serialized, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"event: {event_type}\ndata: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.exception("ask_stream failed")
+            yield f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 
@@ -311,8 +378,18 @@ async def ask_with_file(
 
 
 @app.get("/documents/recent", response_model=RecentDocumentsResponse)
-async def recent_documents(limit: int = 10, user_id: str | None = None):
-    rows = await store.recent_documents(limit=min(limit, 50), user_id=user_id)
+async def recent_documents(
+    limit: int = 10,
+    user_id: str | None = None,
+    category: str | None = None,
+    source: str | None = None,
+):
+    rows = await store.recent_documents(
+        limit=min(limit, 500),
+        user_id=user_id,
+        category=category,
+        source=source,
+    )
     items = [
         DocumentDetail(
             id=str(r.get("id", "")),
@@ -336,6 +413,13 @@ async def list_categories(user_id: str | None = None):
     rows = await store.list_categories(user_id=user_id)
     items = [CategoryItem(category=str(r["category"]), document_count=int(r["document_count"])) for r in rows]
     return CategoriesResponse(items=items)
+
+
+@app.get("/documents/sources", response_model=SourcesResponse)
+async def list_sources(user_id: str | None = None):
+    rows = await store.list_sources(user_id=user_id)
+    items = [SourceItem(source=str(r["source"]), document_count=int(r["document_count"])) for r in rows]
+    return SourcesResponse(items=items)
 
 
 # ── Read Status ───────────────────────────────────────────────────────────────
@@ -579,16 +663,16 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
             source_type=content.source_type,
         )
 
-    # 동적 모델 조회
-    summary_model = await _get_summary_model()
+    # 동적 모델/엔드포인트 조회
+    summary_model, summary_base_url, summary_api_key = await _get_summary_config()
 
     # 카테고리를 먼저 분류해서 요약 프롬프트에 전달 (AI/LLM 여부에 따라 섹션 조건 분기)
     t1 = time.perf_counter()
     category = await classify_category(
         content.title,
         content.content[:800],
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
+        api_key=summary_api_key,
+        base_url=summary_base_url,
         model=summary_model,
     )
     logger.info("Pipeline step classify: category=%s model=%s elapsed=%.2fs", category, summary_model, time.perf_counter() - t1)
@@ -597,8 +681,8 @@ async def _run_summarize_pipeline(content: ExtractedContent, user_id: str | None
     summary = await summarize_content(
         content,
         category=category,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
+        api_key=summary_api_key,
+        base_url=summary_base_url,
         model=summary_model,
         system_prompt=settings.summary_system_prompt,
         user_prompt_template=settings.summary_user_prompt_template,
@@ -803,28 +887,40 @@ async def collector_delete_source(source_id: str):
     return {"ok": True}
 
 
-@app.post("/collector/sources/{source_id}/run", response_model=CollectionRunResponse)
-async def collector_run_source(source_id: str):
+async def _run_source_bg(source: dict, source_id: str):
+    """백그라운드에서 개별 소스 수집 실행."""
+    try:
+        s_model, s_base, s_key = await _get_summary_config()
+        result = await collect_source(source, settings, rag, summary_model=s_model, summary_base_url=s_base, summary_api_key=s_key)
+        if result.collected > 0:
+            await store.update_source_collection_status(source_id, result.collected)
+        sched.set_last_status([result])
+    except Exception:
+        logger.exception("Background source run failed: %s", source.get("name"))
+
+
+async def _run_all_bg():
+    """백그라운드에서 전체 수집 실행."""
+    try:
+        results = await run_all_sources(settings, store, rag)
+        sched.set_last_status(results)
+    except Exception:
+        logger.exception("Background run-all failed")
+
+
+@app.post("/collector/sources/{source_id}/run")
+async def collector_run_source(source_id: str, background_tasks: BackgroundTasks):
     source = await store.get_feed_source(source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
-    result = await collect_source(source, settings, rag)
-    await store.update_source_collection_status(source_id, result.collected)
-    sched.set_last_status([result])
-    return CollectionRunResponse(
-        status="ok",
-        results=[CollectionResultItem(**result.to_dict())],
-    )
+    background_tasks.add_task(_run_source_bg, source, source_id)
+    return {"status": "accepted", "message": f"{source['name']} 수집이 백그라운드에서 시작되었습니다."}
 
 
-@app.post("/collector/run", response_model=CollectionRunResponse)
-async def collector_run_all():
-    results = await run_all_sources(settings, store, rag)
-    sched.set_last_status(results)
-    return CollectionRunResponse(
-        status="ok",
-        results=[CollectionResultItem(**r.to_dict()) for r in results],
-    )
+@app.post("/collector/run")
+async def collector_run_all(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_run_all_bg)
+    return {"status": "accepted", "message": "전체 수집이 백그라운드에서 시작되었습니다."}
 
 
 @app.get("/collector/status", response_model=CollectorStatusResponse)
@@ -834,6 +930,11 @@ async def collector_status():
         last_run=last_run,
         results=[CollectionResultItem(**r.to_dict()) for r in results],
     )
+
+
+@app.get("/collector/logs")
+async def collector_logs():
+    return {"logs": sched.get_collection_logs()}
 
 
 class TestFeedRequest(BaseModel):
@@ -892,22 +993,103 @@ async def run_cleanup():
     return {"ok": True, **latest}
 
 
+# ── Tombstones (재수집 차단 목록) ─────────────────────────────────────────────
+
+@app.get("/admin/tombstones")
+async def list_tombstones(limit: int = 100, offset: int = 0):
+    """사용자 삭제로 재수집이 차단된 URL 목록 (최신순)."""
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    items = await store.list_tombstones(limit=limit, offset=offset)
+    total = await store.count_tombstones()
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/admin/tombstones/count")
+async def count_tombstones():
+    return {"count": await store.count_tombstones()}
+
+
+@app.delete("/admin/tombstones")
+async def remove_tombstone(url: str):
+    """특정 URL의 tombstone 제거 — 다음 수집 때 재수집 허용."""
+    if not url:
+        raise HTTPException(status_code=400, detail="url parameter required")
+    removed = await store.remove_tombstone(url)
+    logger.info("Tombstone removed: url=%s removed=%s", url, removed)
+    return {"ok": True, "removed": removed, "url": url}
+
+
+@app.post("/admin/tombstones/sweep")
+async def sweep_tombstones():
+    """모든 tombstone 일괄 삭제 — 연간 크론과 동일한 동작을 즉시 실행."""
+    deleted = await store.sweep_tombstones()
+    logger.info("Tombstone sweep via API: deleted=%d", deleted)
+    return {"ok": True, "deleted": deleted}
+
+
 # ── Model Settings ───────────────────────────────────────────────────────────
 
 @app.get("/settings/models")
 async def get_model_settings():
     mc = await store.get_model_config()
     if mc:
-        return mc
-    return {"summary_model": settings.openrouter_summary_model, "rag_model": settings.openrouter_rag_model}
+        # API key는 마스킹하여 반환
+        safe = {**mc}
+        for k in ("summary_api_key", "rag_api_key"):
+            v = safe.get(k, "")
+            safe[k] = (v[:8] + "...") if len(v) > 8 else v
+        return safe
+    return {
+        "summary_model": settings.openrouter_summary_model,
+        "rag_model": settings.openrouter_rag_model,
+        "summary_base_url": settings.openrouter_base_url,
+        "rag_base_url": settings.openrouter_base_url,
+        "summary_api_key": "",
+        "rag_api_key": "",
+    }
 
 
 @app.put("/settings/models")
 async def update_model_settings(body: dict):
     summary_model = body.get("summary_model", "").strip()
     rag_model = body.get("rag_model", "").strip()
+    summary_base_url = body.get("summary_base_url", "").strip()
+    rag_base_url = body.get("rag_base_url", "").strip()
+    summary_api_key = body.get("summary_api_key", "").strip()
+    rag_api_key = body.get("rag_api_key", "").strip()
     if not summary_model or not rag_model:
         raise HTTPException(status_code=400, detail="summary_model and rag_model are required")
-    await store.upsert_model_config(summary_model, rag_model)
-    logger.info("Model config updated: summary=%s rag=%s", summary_model, rag_model)
-    return {"ok": True, "summary_model": summary_model, "rag_model": rag_model}
+    # "..." 으로 끝나는 마스킹된 키는 기존 값 유지
+    if summary_api_key.endswith("..."):
+        mc = await store.get_model_config()
+        summary_api_key = mc.get("summary_api_key", "") if mc else ""
+    if rag_api_key.endswith("..."):
+        mc = mc if "mc" in dir() else await store.get_model_config()
+        rag_api_key = mc.get("rag_api_key", "") if mc else ""
+    await store.upsert_model_config(summary_model, rag_model, summary_base_url, rag_base_url, summary_api_key, rag_api_key)
+    logger.info("Model config updated: summary=%s(%s) rag=%s(%s)", summary_model, summary_base_url or "default", rag_model, rag_base_url or "default")
+    return {"ok": True}
+
+
+@app.post("/settings/models/test")
+async def test_model(body: dict):
+    """모델 연결 테스트. type: 'summary' 또는 'rag'."""
+    import httpx as _httpx
+    model_type = body.get("type", "summary")
+    if model_type == "rag":
+        model, base_url, api_key = await _get_rag_config()
+    else:
+        model, base_url, api_key = await _get_summary_config()
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                json={"model": model, "messages": [{"role": "user", "content": "Hello, respond in one sentence."}], "max_tokens": 50},
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+            answer = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+            return {"ok": True, "model": model, "base_url": base_url, "response": answer}
+    except Exception as exc:
+        return {"ok": False, "model": model, "base_url": base_url, "error": f"{exc.__class__.__name__}: {str(exc)[:200]}"}

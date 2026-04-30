@@ -24,7 +24,15 @@ def _chunks(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
     return out
 
 
-def _build_doc_filter(category: str | None, user_id: str | None, document_id: str | None = None) -> str:
+MANUAL_SOURCE_SENTINEL = "__manual__"
+
+
+def _build_doc_filter(
+    category: str | None,
+    user_id: str | None,
+    document_id: str | None = None,
+    source: str | None = None,
+) -> str:
     """Build WHERE clause for Document node filtering."""
     clauses = []
     if category:
@@ -33,6 +41,11 @@ def _build_doc_filter(category: str | None, user_id: str | None, document_id: st
         clauses.append("d.user_id = $user_id")
     if document_id:
         clauses.append("d.id = $document_id")
+    if source is not None:
+        if source == MANUAL_SOURCE_SENTINEL:
+            clauses.append("d.collected_from IS NULL")
+        else:
+            clauses.append("d.collected_from = $source")
     return ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
 
@@ -64,6 +77,11 @@ class Neo4jStore:
                 "CREATE CONSTRAINT feed_source_id IF NOT EXISTS "
                 "FOR (fs:FeedSource) REQUIRE fs.id IS UNIQUE"
             )
+            # Unique constraint: DeletedDocument (tombstone for user-deleted URLs)
+            await s.run(
+                "CREATE CONSTRAINT deleted_document_url IF NOT EXISTS "
+                "FOR (x:DeletedDocument) REQUIRE x.source_url IS UNIQUE"
+            )
             # Vector index (Neo4j 5.11+)
             await s.run(
                 f"""
@@ -86,6 +104,7 @@ class Neo4jStore:
             await s.run("CREATE INDEX doc_summary_date IF NOT EXISTS FOR (d:Document) ON (d.summary_date)")
             await s.run("CREATE INDEX doc_category IF NOT EXISTS FOR (d:Document) ON (d.category)")
             await s.run("CREATE INDEX doc_user_id IF NOT EXISTS FOR (d:Document) ON (d.user_id)")
+            await s.run("CREATE INDEX doc_collected_from IF NOT EXISTS FOR (d:Document) ON (d.collected_from)")
         logger.info("Neo4j indexes ensured")
 
     # ─── Ingest ────────────────────────────────────────────────────────────────
@@ -179,6 +198,12 @@ class Neo4jStore:
                     user_id=user_id,
                 )
 
+            # 수동 재등록 시 기존 tombstone은 자동 제거 (사용자 의도 = 다시 보고 싶음)
+            await s.run(
+                "MATCH (x:DeletedDocument {source_url: $url}) DETACH DELETE x",
+                url=source_url,
+            )
+
             return doc_id, True
 
     # ─── Search ────────────────────────────────────────────────────────────────
@@ -191,8 +216,9 @@ class Neo4jStore:
         score_threshold: float = 0.5,
         user_id: str | None = None,
         document_id: str | None = None,
+        source: str | None = None,
     ) -> list[dict[str, Any]]:
-        doc_filter = _build_doc_filter(category, user_id, document_id)
+        doc_filter = _build_doc_filter(category, user_id, document_id, source)
         async with self._driver.session() as s:
             result = await s.run(
                 f"""
@@ -218,6 +244,7 @@ class Neo4jStore:
                 category=category,
                 user_id=user_id,
                 document_id=document_id,
+                source=source,
                 limit=limit,
                 score_threshold=score_threshold,
             )
@@ -230,11 +257,12 @@ class Neo4jStore:
         category: str | None = None,
         user_id: str | None = None,
         document_id: str | None = None,
+        source: str | None = None,
     ) -> list[dict[str, Any]]:
         # Lucene: escape special chars, use OR for multi-token
         tokens = re.findall(r"[0-9A-Za-z가-힣]{2,}", query)
         fts_query = " OR ".join(f"{t}*" for t in tokens) if tokens else query
-        doc_filter = _build_doc_filter(category, user_id, document_id)
+        doc_filter = _build_doc_filter(category, user_id, document_id, source)
         async with self._driver.session() as s:
             try:
                 result = await s.run(
@@ -259,6 +287,7 @@ class Neo4jStore:
                     category=category,
                     user_id=user_id,
                     document_id=document_id,
+                    source=source,
                     limit=limit,
                 )
                 return await result.data()
@@ -274,10 +303,15 @@ class Neo4jStore:
         category: str | None = None,
         user_id: str | None = None,
         document_id: str | None = None,
+        source: str | None = None,
     ) -> list[dict[str, Any]]:
         """Vector + fulltext search merged with Reciprocal Rank Fusion."""
-        vector_results = await self.vector_search(query_embedding, limit, category, user_id=user_id, document_id=document_id)
-        fts_results = await self.fulltext_search(query, limit, category, user_id=user_id, document_id=document_id)
+        vector_results = await self.vector_search(
+            query_embedding, limit, category, user_id=user_id, document_id=document_id, source=source
+        )
+        fts_results = await self.fulltext_search(
+            query, limit, category, user_id=user_id, document_id=document_id, source=source
+        )
 
         # RRF merge (k=60)
         rrf_k = 60
@@ -323,8 +357,14 @@ class Neo4jStore:
             record = await result.single()
             return dict(record) if record else None
 
-    async def recent_documents(self, limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
-        doc_filter = _build_doc_filter(None, user_id)
+    async def recent_documents(
+        self,
+        limit: int = 10,
+        user_id: str | None = None,
+        category: str | None = None,
+        source: str | None = None,
+    ) -> list[dict[str, Any]]:
+        doc_filter = _build_doc_filter(category, user_id, source=source)
         async with self._driver.session() as s:
             result = await s.run(
                 f"""
@@ -342,6 +382,8 @@ class Neo4jStore:
                 """,
                 limit=limit,
                 user_id=user_id,
+                category=category,
+                source=source,
             )
             return await result.data()
 
@@ -388,14 +430,26 @@ class Neo4jStore:
             return await result.data()
 
     async def delete_document(self, document_id: str) -> bool:
-        """Document와 관련 Chunk 노드 및 관계를 모두 삭제. Tag 노드는 유지."""
+        """사용자 삭제: Document + Chunk 노드를 하드 삭제하고 DeletedDocument tombstone을 원자적으로 기록.
+
+        같은 트랜잭션이라 tombstone MERGE 실패 시 DELETE도 롤백된다.
+        동일 URL 재삭제 시에도 MERGE가 멱등하게 deleted_at만 갱신.
+        """
         async with self._driver.session() as s:
             result = await s.run(
                 """
                 MATCH (d:Document {id: $id})
+                WITH d, d.source_url AS url, d.content_hash AS h, d.id AS did
                 OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
-                DETACH DELETE c, d
-                RETURN count(d) AS deleted
+                WITH d, url, h, did, collect(c) AS cs
+                MERGE (x:DeletedDocument {source_url: url})
+                  ON CREATE SET x.deleted_at = datetime(), x.reason = 'user_delete',
+                                x.document_id = did, x.content_hash = h
+                  ON MATCH  SET x.deleted_at = datetime(), x.reason = 'user_delete',
+                                x.document_id = did, x.content_hash = h
+                FOREACH (c IN cs | DETACH DELETE c)
+                DETACH DELETE d
+                RETURN 1 AS deleted
                 """,
                 id=document_id,
             )
@@ -410,6 +464,22 @@ class Neo4jStore:
                 MATCH (d:Document)
                 {doc_filter}
                 RETURN d.category AS category, count(d) AS document_count
+                ORDER BY document_count DESC
+                """,
+                user_id=user_id,
+            )
+            return await result.data()
+
+    async def list_sources(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """출처(collected_from) 별 문서 수 집계. null은 '__manual__'로 묶는다."""
+        doc_filter = _build_doc_filter(None, user_id)
+        async with self._driver.session() as s:
+            result = await s.run(
+                f"""
+                MATCH (d:Document)
+                {doc_filter}
+                WITH coalesce(d.collected_from, '{MANUAL_SOURCE_SENTINEL}') AS source, d
+                RETURN source, count(d) AS document_count
                 ORDER BY document_count DESC
                 """,
                 user_id=user_id,
@@ -702,6 +772,94 @@ class Neo4jStore:
             record = await result.single()
             return bool(record and record["cnt"] > 0)
 
+    async def should_skip_for_collection(
+        self, url: str, retention_tombstone_days: int = 30
+    ) -> tuple[bool, str | None]:
+        """수집기 전용 스킵 판정.
+
+        - user_delete tombstone: 항상 skip (연 1회 sweep까지 보호)
+        - retention_expiry tombstone: deleted_at이 N일 이내면 skip, 그 이후엔 재수집 허용
+          (피드에 오래 머문 콘텐츠가 영구 블록되지 않도록)
+
+        returns (skip?, reason):
+          - (True, "live")              — 이미 수집된 문서가 있음
+          - (True, "user_delete")       — 사용자가 명시적으로 삭제
+          - (True, "retention_expiry")  — retention TTL로 삭제 + 아직 N일 이내
+          - (False, None)               — 수집 진행 가능
+        """
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                OPTIONAL MATCH (d:Document {source_url: $url})
+                OPTIONAL MATCH (x:DeletedDocument {source_url: $url})
+                WITH d, x, datetime() - duration({days: $days}) AS cutoff
+                RETURN d IS NOT NULL AS live,
+                       x.reason AS reason,
+                       (x IS NOT NULL AND x.deleted_at >= cutoff) AS within_ttl
+                """,
+                url=url,
+                days=int(retention_tombstone_days),
+            )
+            record = await result.single()
+            if not record:
+                return False, None
+            if record["live"]:
+                return True, "live"
+            reason = record["reason"]
+            if reason == "user_delete":
+                return True, "user_delete"
+            if reason == "retention_expiry":
+                return (True, "retention_expiry") if record["within_ttl"] else (False, None)
+            # 레거시 reason 없는 tombstone — 방어적으로 skip
+            if reason is not None:
+                return True, reason
+            return False, None
+
+    async def list_tombstones(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """관리자용 tombstone 목록 조회. 최신 삭제순."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (x:DeletedDocument)
+                RETURN x.source_url AS source_url,
+                       toString(x.deleted_at) AS deleted_at,
+                       x.reason AS reason,
+                       x.document_id AS document_id,
+                       x.content_hash AS content_hash
+                ORDER BY x.deleted_at DESC
+                SKIP $offset LIMIT $limit
+                """,
+                limit=int(limit),
+                offset=int(offset),
+            )
+            return [dict(r) async for r in result]
+
+    async def remove_tombstone(self, url: str) -> bool:
+        """특정 URL의 tombstone 제거 (관리자). 멱등."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                "MATCH (x:DeletedDocument {source_url: $url}) DETACH DELETE x RETURN count(x) AS removed",
+                url=url,
+            )
+            record = await result.single()
+            return bool(record and record["removed"] > 0)
+
+    async def count_tombstones(self) -> int:
+        """전체 tombstone 개수. 운영 모니터링용."""
+        async with self._driver.session() as s:
+            result = await s.run("MATCH (x:DeletedDocument) RETURN count(x) AS cnt")
+            record = await result.single()
+            return int(record["cnt"]) if record else 0
+
+    async def sweep_tombstones(self) -> int:
+        """모든 tombstone 일괄 삭제. 연 1회 크론 또는 수동 트리거."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                "MATCH (x:DeletedDocument) DETACH DELETE x RETURN count(x) AS deleted"
+            )
+            record = await result.single()
+            return int(record["deleted"]) if record else 0
+
     async def feed_sources_count(self) -> int:
         async with self._driver.session() as s:
             result = await s.run("MATCH (fs:FeedSource) RETURN count(fs) AS cnt")
@@ -720,21 +878,38 @@ class Neo4jStore:
     async def get_model_config(self) -> dict | None:
         async with self._driver.session() as s:
             result = await s.run(
-                "MATCH (mc:ModelConfig {id: 'default'}) RETURN mc.summary_model AS summary_model, mc.rag_model AS rag_model"
+                """MATCH (mc:ModelConfig {id: 'default'})
+                   RETURN mc.summary_model AS summary_model, mc.rag_model AS rag_model,
+                          mc.summary_base_url AS summary_base_url, mc.rag_base_url AS rag_base_url,
+                          mc.summary_api_key AS summary_api_key, mc.rag_api_key AS rag_api_key"""
             )
             record = await result.single()
             if record:
-                return {"summary_model": str(record["summary_model"]), "rag_model": str(record["rag_model"])}
+                return {
+                    "summary_model": str(record["summary_model"]),
+                    "rag_model": str(record["rag_model"]),
+                    "summary_base_url": str(record["summary_base_url"] or ""),
+                    "rag_base_url": str(record["rag_base_url"] or ""),
+                    "summary_api_key": str(record["summary_api_key"] or ""),
+                    "rag_api_key": str(record["rag_api_key"] or ""),
+                }
             return None
 
-    async def upsert_model_config(self, summary_model: str, rag_model: str) -> None:
+    async def upsert_model_config(self, summary_model: str, rag_model: str,
+                                   summary_base_url: str = "", rag_base_url: str = "",
+                                   summary_api_key: str = "", rag_api_key: str = "") -> None:
         async with self._driver.session() as s:
             await s.run(
                 """
                 MERGE (mc:ModelConfig {id: 'default'})
-                SET mc.summary_model = $summary_model, mc.rag_model = $rag_model, mc.updated_at = datetime()
+                SET mc.summary_model = $summary_model, mc.rag_model = $rag_model,
+                    mc.summary_base_url = $summary_base_url, mc.rag_base_url = $rag_base_url,
+                    mc.summary_api_key = $summary_api_key, mc.rag_api_key = $rag_api_key,
+                    mc.updated_at = datetime()
                 """,
                 summary_model=summary_model, rag_model=rag_model,
+                summary_base_url=summary_base_url, rag_base_url=rag_base_url,
+                summary_api_key=summary_api_key, rag_api_key=rag_api_key,
             )
 
     # ─── Retention / Cleanup ─────────────────────────────────────────────────
@@ -790,21 +965,52 @@ class Neo4jStore:
                 and (r.get("collected_from") or "") not in protected_sources
             ]
 
-    async def bulk_delete_documents(self, doc_ids: list[str]) -> int:
-        """문서 + Chunk 일괄 삭제. 삭제 건수 반환."""
+    async def bulk_delete_documents(
+        self,
+        doc_ids: list[str],
+        *,
+        tombstone: bool = False,
+        reason: str = "bulk_delete",
+    ) -> int:
+        """문서 + Chunk 일괄 삭제. 삭제 건수 반환.
+
+        tombstone=True로 호출하면 DeletedDocument 노드를 함께 기록해 재수집을 차단.
+        기본값 False — 보존기간 만료(_scheduled_cleanup) 경로에서는 tombstone을
+        찍지 않아서 피드에 재등장 시 다시 수집 가능.
+        """
         if not doc_ids:
             return 0
         async with self._driver.session() as s:
-            result = await s.run(
-                """
-                MATCH (d:Document) WHERE d.id IN $ids
-                OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
-                WITH d, collect(c) AS chunks
-                DETACH DELETE d
-                FOREACH (c IN chunks | DELETE c)
-                RETURN count(d) AS deleted
-                """,
-                ids=doc_ids,
-            )
+            if tombstone:
+                result = await s.run(
+                    """
+                    MATCH (d:Document) WHERE d.id IN $ids
+                    WITH d, d.source_url AS url, d.content_hash AS h, d.id AS did
+                    OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+                    WITH d, url, h, did, collect(c) AS chunks
+                    MERGE (x:DeletedDocument {source_url: url})
+                      ON CREATE SET x.deleted_at = datetime(), x.reason = $reason,
+                                    x.document_id = did, x.content_hash = h
+                      ON MATCH  SET x.deleted_at = datetime(), x.reason = $reason,
+                                    x.document_id = did, x.content_hash = h
+                    FOREACH (c IN chunks | DELETE c)
+                    DETACH DELETE d
+                    RETURN count(d) AS deleted
+                    """,
+                    ids=doc_ids,
+                    reason=reason,
+                )
+            else:
+                result = await s.run(
+                    """
+                    MATCH (d:Document) WHERE d.id IN $ids
+                    OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+                    WITH d, collect(c) AS chunks
+                    DETACH DELETE d
+                    FOREACH (c IN chunks | DELETE c)
+                    RETURN count(d) AS deleted
+                    """,
+                    ids=doc_ids,
+                )
             record = await result.single()
             return int(record["deleted"]) if record else 0

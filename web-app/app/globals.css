@@ -3,8 +3,15 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    /* 가로 오버플로우 가드 (모바일 좁은 뷰포트에서 레이아웃 터지는 것 방지) */
+    overflow-x: hidden;
+  }
   body {
     -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    /* Chrome 모바일의 pull-to-refresh 우발 작동 방지 */
+    overscroll-behavior-y: contain;
   }
 }
 

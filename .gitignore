@@ -11,6 +11,7 @@ chat_history.db
 web-app/.next/
 web-app/node_modules/
 web-app/.env.local
+web-app/tsconfig.tsbuildinfo
 
 # Sibling project (separate git repo)
 summ_kakaobot/

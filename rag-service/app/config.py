@@ -35,6 +35,9 @@ class Settings:
     collector_user_id: str = "auto-collector"
     retention_days: int = 7
     cleanup_enabled: bool = True
+    tombstone_sweep_enabled: bool = True
+    # retention으로 삭제된 문서는 이 기간 동안만 재수집 차단 (그 이후 피드에 여전히 있으면 재수집 허용)
+    retention_tombstone_days: int = 30
 
     @staticmethod
     def from_env() -> "Settings":
@@ -60,4 +63,6 @@ class Settings:
             collector_user_id=os.getenv("COLLECTOR_USER_ID", "auto-collector"),
             retention_days=int(os.getenv("RETENTION_DAYS", "7")),
             cleanup_enabled=os.getenv("CLEANUP_ENABLED", "true").lower() in ("true", "1", "yes"),
+            tombstone_sweep_enabled=os.getenv("TOMBSTONE_SWEEP_ENABLED", "true").lower() in ("true", "1", "yes"),
+            retention_tombstone_days=int(os.getenv("RETENTION_TOMBSTONE_DAYS", "30")),
         )

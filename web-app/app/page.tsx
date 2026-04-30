@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { api, DocumentDetail, CategoryItem, Category } from "@/lib/api";
+import { api, DocumentDetail, CategoryItem, Category, SourceItem, MANUAL_SOURCE_SENTINEL } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
 import { getSessionsByDoc } from "@/lib/chat-history";
 import IngestModal from "./components/IngestModal";
@@ -130,12 +130,27 @@ function SummaryModal({ doc, onClose, isBookmarked, onToggleBookmark }: {
             </div>
             <h2 className="text-sm font-bold text-gray-900 leading-snug">{resolvedDoc.title || "Untitled"}</h2>
           </div>
-          <button
-            onClick={onClose}
-            className="shrink-0 text-gray-400 hover:text-gray-600 transition-colors text-lg leading-none"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {doc.id && (
+              <button
+                onClick={onToggleBookmark}
+                className={`transition-colors ${isBookmarked ? "text-yellow-500 hover:text-yellow-600" : "text-gray-300 hover:text-yellow-400"}`}
+                title={isBookmarked ? "북마크 해제" : "북마크"}
+                aria-label={isBookmarked ? "북마크 해제" : "북마크"}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={isBookmarked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-5 h-5">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                </svg>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 transition-colors text-lg leading-none"
+              aria-label="닫기"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -236,18 +251,20 @@ function SummaryModal({ doc, onClose, isBookmarked, onToggleBookmark }: {
         {/* Footer */}
         <div className="p-4 border-t border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {doc.id && (
-              <button
-                onClick={onToggleBookmark}
-                className={`flex items-center gap-1 text-xs font-medium transition-colors ${
-                  isBookmarked ? "text-yellow-500" : "text-gray-400 hover:text-yellow-400"
-                }`}
+            {resolvedDoc.source_url && !resolvedDoc.source_url.startsWith("upload://") && (
+              <a
+                href={resolvedDoc.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-blue-600 transition-colors"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={isBookmarked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-4 h-4">
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/>
+                  <line x1="10" y1="14" x2="21" y2="3"/>
                 </svg>
-                {isBookmarked ? "북마크됨" : "북마크"}
-              </button>
+                원문보기
+              </a>
             )}
             {doc.id && (
               <button
@@ -354,6 +371,8 @@ export default function HomePage() {
   const [docs, setDocs] = useState<DocumentDetail[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<Category | undefined>();
+  const [sources, setSources] = useState<SourceItem[]>([]);
+  const [selectedSource, setSelectedSource] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<DocumentDetail[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -392,23 +411,29 @@ export default function HomePage() {
     }
   };
 
-  const loadDocs = useCallback(() => {
+  const loadMetadata = useCallback(() => {
     const uid = typeof window !== "undefined" ? getUserId() : null;
     Promise.all([
-      api.recentDocuments(50).catch(() => null),
       api.categories().catch(() => null),
+      api.sources().catch(() => null),
       uid ? api.getReadIds(uid).catch(() => null) : Promise.resolve(null),
       uid ? api.getBookmarkIds(uid).catch(() => null) : Promise.resolve(null),
-    ]).then(([docRes, catRes, readRes, bmRes]) => {
-      if (!docRes && !catRes) setApiError(true);
-      if (docRes) setDocs(docRes.items);
+    ]).then(([catRes, srcRes, readRes, bmRes]) => {
       if (catRes) setCategories(catRes.items);
+      if (srcRes) setSources(srcRes.items);
       if (readRes) setReadIds(new Set(readRes.ids));
       if (bmRes) setBookmarkIds(new Set(bmRes.ids));
     });
   }, []);
 
-  useEffect(() => { setMounted(true); loadDocs(); }, [loadDocs]);
+  const loadDocs = useCallback(() => {
+    api.recentDocuments(500, selectedCategory, selectedSource)
+      .then((res) => { setDocs(res.items); setApiError(false); })
+      .catch(() => setApiError(true));
+  }, [selectedCategory, selectedSource]);
+
+  useEffect(() => { setMounted(true); loadMetadata(); }, [loadMetadata]);
+  useEffect(() => { loadDocs(); }, [loadDocs]);
 
   // ?doc=ID 쿼리 파라미터로 문서 모달 자동 오픈
   const searchParams = useSearchParams();
@@ -433,7 +458,7 @@ export default function HomePage() {
     if (!searchQuery.trim()) { setSearchResults(null); return; }
     setLoading(true);
     try {
-      const res = await api.search(searchQuery, 20, selectedCategory);
+      const res = await api.search(searchQuery, 20, selectedCategory, selectedSource);
       // Deduplicate by document_id (multiple chunks from same doc)
       const seen = new Set<string>();
       const mapped: DocumentDetail[] = [];
@@ -461,11 +486,7 @@ export default function HomePage() {
     }
   };
 
-  const displayDocs = searchResults
-    ? searchResults
-    : selectedCategory
-    ? docs.filter((d) => d.category === selectedCategory)
-    : docs;
+  const displayDocs = searchResults ?? docs;
 
   const totalDocs = categories.reduce((s, c) => s + c.document_count, 0);
 
@@ -527,7 +548,7 @@ export default function HomePage() {
         </form>
 
         {/* Category filter */}
-        <div className="flex gap-2 mt-4 pt-4 border-t border-gray-100 overflow-x-auto pb-1 scrollbar-none">
+        <div className="flex gap-2 mt-4 pt-4 border-t border-gray-100 overflow-x-auto pb-1 scrollbar-none touch-pan-x">
           <button
             onClick={() => setSelectedCategory(undefined)}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
@@ -552,6 +573,39 @@ export default function HomePage() {
             </button>
           ))}
         </div>
+
+        {/* Source filter */}
+        {sources.length > 0 && (
+          <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-none touch-pan-x">
+            <span className="shrink-0 self-center text-[11px] font-semibold text-gray-400 pr-1">출처</span>
+            <button
+              onClick={() => setSelectedSource(undefined)}
+              className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                !selectedSource
+                  ? "bg-emerald-600 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              전체
+            </button>
+            {sources.map((s) => {
+              const label = s.source === MANUAL_SOURCE_SENTINEL ? "수동 등록" : s.source;
+              return (
+                <button
+                  key={s.source}
+                  onClick={() => setSelectedSource(s.source)}
+                  className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    selectedSource === s.source
+                      ? "bg-emerald-600 text-white"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  }`}
+                >
+                  {label} ({s.document_count})
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Results header */}
@@ -576,7 +630,7 @@ export default function HomePage() {
             return (
             <div
               key={doc.id || `${doc.source_url}-${i}`}
-              className={`bg-white rounded-xl border shadow-sm p-5 hover:border-blue-200 hover:shadow-md transition-all group ${unread ? "border-blue-100" : "border-gray-100"}`}
+              className={`bg-white rounded-xl border shadow-sm p-5 min-w-0 break-words hover:border-blue-200 hover:shadow-md transition-all group ${unread ? "border-blue-100" : "border-gray-100"}`}
             >
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div className="flex items-center gap-1.5 flex-wrap">
